@@ -22,6 +22,7 @@ python scaffold.py
 - [x] **10.** shrinkage_path
 - [x] **11.** weighted_stump
 - [x] **12.** adaboost_fit
+- [x] **13.** probability_report
 
 ---
 

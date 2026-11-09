@@ -1351,3 +1351,142 @@ def adaboost_fit(X, y01, M=100, max_bins=64):
         "weights": w
     }
 
+# Step 13 - probability_report
+def half_logit_proba(f):
+    """
+    Convert half-log-odds scores into probabilities.
+
+    Formula:
+        p = 1 / (1 + exp(-2*f))
+
+    Uses a numerically stable implementation to avoid
+    overflow for large positive or negative scores.
+
+    Parameters
+    ----------
+    f : array-like
+        Half-log-odds scores.
+
+    Returns
+    -------
+    ndarray or numpy scalar
+        Predicted probabilities.
+    """
+    f = np.asarray(f, dtype=float)
+
+    # Numerically stable sigmoid transformation.
+    # logaddexp avoids overflow for large score magnitudes.
+    return np.exp(-np.logaddexp(0.0, -2.0 * f))
+
+
+def probability_report(y01, p, n_bins=10):
+    """
+    Evaluate predicted probabilities using log-loss, ECE and
+    classification error.
+
+    Parameters
+    ----------
+    y01 : ndarray of shape (n,)
+        True binary labels in {0, 1}.
+
+    p : ndarray of shape (n,)
+        Predicted probabilities in [0, 1].
+
+    n_bins : int
+        Number of equal-width bins used for ECE.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        log_loss : Mean binary cross-entropy in nats.
+        ece      : Expected calibration error.
+        error    : Classification error rate.
+    """
+    y01 = np.asarray(y01, dtype=float)
+    p = np.asarray(p, dtype=float)
+
+    if y01.ndim != 1 or p.ndim != 1 or y01.shape != p.shape:
+        raise ValueError("y01 and p must be 1D arrays of equal length.")
+
+    if len(y01) == 0:
+        raise ValueError("At least one example is required.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only finite binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(p)) or np.any(p < 0.0) or np.any(p > 1.0):
+        raise ValueError("Probabilities must be finite and lie in [0, 1].")
+
+    if (
+        not isinstance(n_bins, (int, np.integer))
+        or isinstance(n_bins, (bool, np.bool_))
+        or n_bins < 1
+    ):
+        raise ValueError("n_bins must be a positive integer.")
+
+    n = len(y01)
+
+    # ---------------------------------------------------------
+    # 1. Binary cross-entropy (log-loss).
+    # ---------------------------------------------------------
+
+    # Clip probabilities to avoid log(0).
+    p_clipped = np.clip(p, 1e-12, 1.0 - 1e-12)
+
+    log_loss = -np.mean(
+        y01 * np.log(p_clipped)
+        + (1.0 - y01) * np.log1p(-p_clipped)
+    )
+
+    # ---------------------------------------------------------
+    # 2. Expected Calibration Error (ECE).
+    # ---------------------------------------------------------
+
+    # Assign predictions to equal-width bins in [0, 1].
+    # The minimum operation ensures that p = 1 belongs to
+    # the final bin rather than an invalid bin n_bins.
+    bin_ids = np.minimum(
+        (p * n_bins).astype(int),
+        n_bins - 1
+    )
+
+    ece = 0.0
+
+    for b in range(n_bins):
+
+        # Identify examples belonging to the current bin.
+        mask = bin_ids == b
+
+        # Ignore empty bins.
+        if not np.any(mask):
+            continue
+
+        # Mean observed accuracy in this bin.
+        bin_accuracy = np.mean(y01[mask])
+
+        # Mean predicted confidence in this bin.
+        bin_confidence = np.mean(p[mask])
+
+        # Weight calibration error by the fraction of examples.
+        bin_fraction = np.sum(mask) / n
+
+        ece += bin_fraction * abs(
+            bin_accuracy - bin_confidence
+        )
+
+    # ---------------------------------------------------------
+    # 3. Classification error.
+    # ---------------------------------------------------------
+
+    predicted_labels = (p > 0.5).astype(float)
+
+    error = np.mean(predicted_labels != y01)
+
+    # Return ordinary Python floats.
+    return {
+        "log_loss": float(log_loss),
+        "ece": float(ece),
+        "error": float(error)
+    }
+
