@@ -4293,3 +4293,91 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
 
     return results
 
+# Step 29 - feature_importance
+def feature_importance(trees, n_features):
+    """
+    Calculate normalized feature importance for a tree ensemble.
+
+    Importance is calculated by:
+        1. Summing split gains for each feature in each tree.
+        2. Averaging the gains across all trees.
+        3. Scaling the largest importance to 100.
+
+    Parameters
+    ----------
+    trees : list
+        List of decision trees. Each tree contains:
+        feature : Feature index for each node (-1 for leaves).
+        gain    : Split gain associated with each node.
+
+    n_features : int
+        Total number of input features.
+
+    Returns
+    -------
+    ndarray of shape (n_features,)
+        Relative feature importance, scaled so the largest
+        importance equals 100. Returns zeros if no tree splits.
+    """
+    if (
+        not isinstance(n_features, (int, np.integer))
+        or isinstance(n_features, (bool, np.bool_))
+        or n_features < 0
+    ):
+        raise ValueError("n_features must be a non-negative integer.")
+
+    importance = np.zeros(n_features, dtype=float)
+
+    # Also allow a single tree dictionary as input.
+    if isinstance(trees, dict):
+        trees = [trees]
+    else:
+        trees = list(trees)
+
+    # No trees means no feature importance.
+    if len(trees) == 0:
+        return importance
+
+    # Accumulate the split gains from every tree.
+    for tree in trees:
+
+        features = np.asarray(tree["feature"], dtype=int)
+        gains = np.asarray(tree["gain"], dtype=float)
+
+        if features.ndim != 1 or gains.ndim != 1:
+            raise ValueError("Tree feature and gain arrays must be 1D.")
+
+        if features.shape != gains.shape:
+            raise ValueError("Tree feature and gain arrays must have equal lengths.")
+
+        if not np.all(np.isfinite(gains)):
+            raise ValueError("Tree gains must be finite.")
+
+        # Internal nodes have feature indices >= 0.
+        # Leaf nodes have feature == -1 and are ignored.
+        split_mask = features >= 0
+
+        split_features = features[split_mask]
+        split_gains = gains[split_mask]
+
+        if np.any(split_features >= n_features):
+            raise ValueError("A tree contains an invalid feature index.")
+
+        # Sum the gains belonging to each feature.
+        importance += np.bincount(
+            split_features,
+            weights=split_gains,
+            minlength=n_features
+        )
+
+    # Average feature importance across all trees.
+    importance /= len(trees)
+
+    # Normalize so that the largest importance equals 100.
+    max_importance = np.max(importance) if n_features > 0 else 0.0
+
+    if max_importance > 0.0:
+        importance = 100.0 * importance / max_importance
+
+    return importance
+
