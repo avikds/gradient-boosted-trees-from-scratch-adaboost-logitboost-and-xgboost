@@ -30,6 +30,7 @@ python scaffold.py
 - [x] **18.** resolve_leaf
 - [x] **19.** gradient_boost_fit
 - [x] **20.** outlier_study
+- [x] **21.** softmax_boost_fit
 
 ---
 

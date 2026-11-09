@@ -2693,3 +2693,334 @@ def outlier_study(X_train, y_train, X_test, y_test,
 
     return results
 
+# Step 21 - softmax_boost_fit
+def softmax(F):
+    """
+    Convert multiclass scores into probabilities using row-wise softmax.
+
+    Parameters
+    ----------
+    F : ndarray of shape (n, C)
+        Multiclass score matrix.
+
+    Returns
+    -------
+    ndarray of shape (n, C)
+        Row-wise class probabilities.
+    """
+    F = np.asarray(F, dtype=float)
+
+    if F.ndim != 2 or F.shape[1] == 0:
+        raise ValueError("F must be a 2D array with at least one class.")
+
+    if not np.all(np.isfinite(F)):
+        raise ValueError("F must contain finite scores.")
+
+    # Subtract the maximum score in each row to prevent overflow.
+    shifted = F - np.max(F, axis=1, keepdims=True)
+
+    # Calculate exponentials and normalize each row.
+    exp_scores = np.exp(shifted)
+
+    return exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+
+
+def softmax_boost_fit(X, y, C, M=50, nu=0.1, max_depth=3, max_bins=64):
+    """
+    Fit a multiclass gradient boosting model using softmax probabilities
+    and Friedman's Newton leaf values.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y : ndarray of shape (n,)
+        Integer class labels in {0, ..., C-1}.
+
+    C : int
+        Number of classes.
+
+    M : int
+        Number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    max_bins : int
+        Maximum number of bins for feature discretization.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges      : Feature bin thresholds.
+        f0         : Initial class scores.
+        rounds     : List of M rounds, each containing C trees.
+        nu         : Learning rate.
+        C          : Number of classes.
+        train_loss : Multiclass log-loss after each round.
+    """
+    X = np.asarray(X)
+    y = np.asarray(y)
+
+    # ---------------------------------------------------------
+    # Validate inputs.
+    # ---------------------------------------------------------
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n = X.shape[0]
+
+    if n == 0:
+        raise ValueError("Training data must contain at least one example.")
+
+    if y.ndim != 1 or y.shape != (n,):
+        raise ValueError("y must contain one class label per training example.")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain finite values.")
+
+    if not isinstance(C, (int, np.integer)) or isinstance(C, (bool, np.bool_)) or C < 2:
+        raise ValueError("C must be an integer of at least 2.")
+
+    if not np.all(np.isfinite(y)) or not np.all(y == np.floor(y)):
+        raise ValueError("y must contain finite integer class labels.")
+
+    y = y.astype(int)
+
+    if np.any(y < 0) or np.any(y >= C):
+        raise ValueError("Class labels must lie between 0 and C-1.")
+
+    if not isinstance(M, (int, np.integer)) or isinstance(M, (bool, np.bool_)) or M < 0:
+        raise ValueError("M must be a non-negative integer.")
+
+    if not np.isfinite(nu):
+        raise ValueError("nu must be finite.")
+
+    # ---------------------------------------------------------
+    # Initialize the model.
+    # ---------------------------------------------------------
+
+    # Fit feature bin thresholds once.
+    edges = fit_bins(X, max_bins=max_bins)
+
+    # Convert training data into integer bin codes.
+    codes = apply_bins(X, edges)
+
+    # Determine the number of bins.
+    nb = n_bins_of(edges)
+
+    # Calculate the frequency of every class.
+    class_counts = np.bincount(y, minlength=C)
+    class_frequencies = class_counts.astype(float) / n
+
+    # Initialize class scores using log class frequencies.
+    # Clip frequencies from below to avoid log(0).
+    f0 = np.log(np.maximum(class_frequencies, 1e-12))
+
+    # Every training example starts with the same class scores.
+    F = np.tile(f0, (n, 1))
+
+    # Store the trees for every boosting round.
+    rounds = []
+
+    # Store training multiclass log-loss.
+    train_loss = []
+
+    # ---------------------------------------------------------
+    # Perform M boosting rounds.
+    # ---------------------------------------------------------
+    for m in range(M):
+
+        # Calculate probabilities once at the beginning of the round.
+        probabilities = softmax(F)
+
+        # Trees for all C classes in this boosting round.
+        round_trees = []
+
+        # -----------------------------------------------------
+        # Fit one tree for each class.
+        # -----------------------------------------------------
+        for c in range(C):
+
+            # Binary indicator for the current class.
+            indicator = (y == c).astype(float)
+
+            # Negative-gradient residual.
+            r = indicator - probabilities[:, c]
+
+            # Fit the tree using negative gradients and unit Hessians.
+            g = -r
+            h = np.ones(n, dtype=float)
+
+            tree = grow_tree(
+                codes,
+                g,
+                h,
+                nb,
+                max_depth=max_depth,
+                min_child_weight=1.0
+            )
+
+            # Find the leaf reached by every training example.
+            leaf_ids = tree_apply(tree, codes)
+
+            # -------------------------------------------------
+            # Replace leaf values with Friedman's Newton values.
+            # -------------------------------------------------
+            for leaf_id in np.unique(leaf_ids):
+
+                # Identify examples belonging to this leaf.
+                mask = leaf_ids == leaf_id
+
+                leaf_r = r[mask]
+
+                # Numerator: sum of residuals.
+                numerator = np.sum(leaf_r)
+
+                # Denominator:
+                # sum(|r_i| * (1 - |r_i|)).
+                denominator = np.sum(
+                    np.abs(leaf_r) * (1.0 - np.abs(leaf_r))
+                )
+
+                # Apply the required denominator floor.
+                denominator = max(float(denominator), 1e-12)
+
+                # Friedman multiclass Newton leaf value.
+                leaf_value = (
+                    ((C - 1.0) / C)
+                    * numerator
+                    / denominator
+                )
+
+                tree["value"][leaf_id] = float(leaf_value)
+
+            # Store the fitted tree for the current class.
+            round_trees.append(tree)
+
+        # -----------------------------------------------------
+        # Update scores after all C trees have been constructed.
+        # -----------------------------------------------------
+        for c in range(C):
+
+            tree_prediction = tree_predict(
+                round_trees[c],
+                codes
+            )
+
+            F[:, c] += nu * tree_prediction
+
+        # Store all class-specific trees for this round.
+        rounds.append(round_trees)
+
+        # -----------------------------------------------------
+        # Calculate multiclass training log-loss.
+        # -----------------------------------------------------
+        probabilities = softmax(F)
+
+        # Select the probability assigned to each true class.
+        true_probabilities = probabilities[
+            np.arange(n),
+            y
+        ]
+
+        # Floor probabilities to prevent log(0).
+        true_probabilities = np.maximum(
+            true_probabilities,
+            1e-12
+        )
+
+        current_loss = -np.mean(
+            np.log(true_probabilities)
+        )
+
+        train_loss.append(float(current_loss))
+
+    # Return the trained multiclass model.
+    return {
+        "edges": edges,
+        "f0": f0,
+        "rounds": rounds,
+        "nu": float(nu),
+        "C": int(C),
+        "train_loss": train_loss
+    }
+
+
+def softmax_boost_proba(model, X, n_rounds=None):
+    """
+    Calculate multiclass probabilities using a fitted softmax
+    boosting model.
+
+    Parameters
+    ----------
+    model : dict
+        Model returned by softmax_boost_fit().
+
+    X : ndarray of shape (n, p)
+        Input feature matrix.
+
+    n_rounds : int or None
+        Number of initial boosting rounds to use.
+        If None, use all available rounds.
+
+    Returns
+    -------
+    ndarray of shape (n, C)
+        Predicted class probabilities.
+    """
+    X = np.asarray(X)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    # Retrieve model information.
+    edges = model["edges"]
+    f0 = np.asarray(model["f0"], dtype=float)
+    rounds = model["rounds"]
+    nu = model["nu"]
+    C = model["C"]
+
+    if X.shape[1] != len(edges):
+        raise ValueError("X must have the same number of features as the training data.")
+
+    if f0.shape != (C,):
+        raise ValueError("Model f0 must contain one initial score per class.")
+
+    # Determine how many rounds to apply.
+    if n_rounds is None:
+        n_rounds = len(rounds)
+
+    if not isinstance(n_rounds, (int, np.integer)) or isinstance(n_rounds, (bool, np.bool_)) or n_rounds < 0:
+        raise ValueError("n_rounds must be a non-negative integer.")
+
+    # Bin the raw input features once.
+    codes = apply_bins(X, edges)
+
+    n = X.shape[0]
+
+    # Initialize scores using the class-specific initial constants.
+    F = np.tile(f0, (n, 1))
+
+    # Apply the requested initial boosting rounds.
+    for round_trees in rounds[:n_rounds]:
+
+        if len(round_trees) != C:
+            raise ValueError("Each boosting round must contain exactly C trees.")
+
+        for c in range(C):
+
+            # Add this class's tree contribution.
+            F[:, c] += nu * tree_predict(
+                round_trees[c],
+                codes
+            )
+
+    # Convert the final class scores into probabilities.
+    return softmax(F)
+
