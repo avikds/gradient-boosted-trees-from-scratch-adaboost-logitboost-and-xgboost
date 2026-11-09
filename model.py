@@ -1974,3 +1974,156 @@ def label_noise_study(X_train, y_train, X_test, y_test,
 
     return results
 
+# Step 17 - negative_gradient
+def loss_value(loss, y, f, delta=1.0):
+    """
+    Calculate per-example loss values for five loss functions.
+
+    Supported losses:
+        squared     : 0.5 * (y - f)^2
+        absolute    : abs(y - f)
+        huber       : Huber loss with parameter delta
+        exponential : exp(-(2*y - 1)*f)
+        logloss     : log(1 + exp(-(2*y - 1)*f))
+
+    Parameters
+    ----------
+    loss : str
+        Name of the loss function.
+
+    y : array-like
+        Target values. For exponential and logloss, labels
+        must belong to {0, 1}.
+
+    f : array-like
+        Model predictions.
+
+    delta : float
+        Positive Huber loss threshold.
+
+    Returns
+    -------
+    ndarray
+        Per-example loss values.
+    """
+    if loss not in ("squared", "absolute", "huber", "exponential", "logloss"):
+        raise ValueError(f"Unknown loss: {loss}")
+
+    y, f = np.broadcast_arrays(
+        np.asarray(y, dtype=float),
+        np.asarray(f, dtype=float)
+    )
+
+    if loss in ("exponential", "logloss"):
+        if not np.all(np.isin(y, [0.0, 1.0])):
+            raise ValueError("Classification labels must be 0 or 1.")
+
+        # Convert binary labels from {0, 1} to {-1, +1}.
+        y_signed = 2.0 * y - 1.0
+
+    if loss == "squared":
+        # Squared-error loss.
+        r = y - f
+        return 0.5 * r**2
+
+    elif loss == "absolute":
+        # Absolute-error loss.
+        return np.abs(y - f)
+
+    elif loss == "huber":
+        # Huber loss.
+        if not np.isfinite(delta) or delta <= 0:
+            raise ValueError("delta must be positive and finite.")
+
+        r = y - f
+        abs_r = np.abs(r)
+
+        return np.where(
+            abs_r <= delta,
+            0.5 * r**2,
+            delta * (abs_r - 0.5 * delta)
+        )
+
+    elif loss == "exponential":
+        # Exponential loss for binary classification.
+        return np.exp(-y_signed * f)
+
+    elif loss == "logloss":
+        # Numerically stable logistic loss.
+        # log(1 + exp(x)) = logaddexp(0, x).
+        return np.logaddexp(0.0, -y_signed * f)
+
+
+def negative_gradient(loss, y, f, delta=1.0):
+    """
+    Calculate the negative gradient of the specified loss
+    with respect to the model predictions f.
+
+    Parameters
+    ----------
+    loss : str
+        Name of the loss function.
+
+    y : array-like
+        Target values. For exponential and logloss, labels
+        must belong to {0, 1}.
+
+    f : array-like
+        Model predictions.
+
+    delta : float
+        Positive Huber loss threshold.
+
+    Returns
+    -------
+    ndarray
+        Per-example negative gradients.
+    """
+    if loss not in ("squared", "absolute", "huber", "exponential", "logloss"):
+        raise ValueError(f"Unknown loss: {loss}")
+
+    y, f = np.broadcast_arrays(
+        np.asarray(y, dtype=float),
+        np.asarray(f, dtype=float)
+    )
+
+    if loss in ("exponential", "logloss"):
+        if not np.all(np.isin(y, [0.0, 1.0])):
+            raise ValueError("Classification labels must be 0 or 1.")
+
+        # Convert binary labels from {0, 1} to {-1, +1}.
+        y_signed = 2.0 * y - 1.0
+
+    if loss == "squared":
+        # Negative gradient of 0.5 * (y - f)^2.
+        return y - f
+
+    elif loss == "absolute":
+        # Negative gradient of absolute-error loss.
+        # At r = 0, use the subgradient 0.
+        return np.sign(y - f)
+
+    elif loss == "huber":
+        # Negative gradient of Huber loss.
+        if not np.isfinite(delta) or delta <= 0:
+            raise ValueError("delta must be positive and finite.")
+
+        r = y - f
+
+        return np.clip(r, -delta, delta)
+
+    elif loss == "exponential":
+        # Negative gradient of exponential loss.
+        return y_signed * np.exp(-y_signed * f)
+
+    elif loss == "logloss":
+        # Negative gradient of logistic loss.
+        #
+        # Equivalent to:
+        # y_signed / (1 + exp(y_signed * f))
+        #
+        # logaddexp provides a numerically stable computation.
+        return y_signed * np.exp(
+            -np.logaddexp(0.0, y_signed * f)
+        )
+
