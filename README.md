@@ -31,6 +31,7 @@ python scaffold.py
 - [x] **19.** gradient_boost_fit
 - [x] **20.** outlier_study
 - [x] **21.** softmax_boost_fit
+- [x] **22.** tree_objective
 
 ---
 

@@ -3024,3 +3024,126 @@ def softmax_boost_proba(model, X, n_rounds=None):
     # Convert the final class scores into probabilities.
     return softmax(F)
 
+# Step 22 - tree_objective
+def logistic_grad_hess(y01, f):
+    """
+    Calculate the gradient and Hessian of binary logistic loss.
+
+    The input f represents full log-odds.
+
+    Gradient:
+        g = sigmoid(f) - y01
+
+    Hessian:
+        h = sigmoid(f) * (1 - sigmoid(f))
+
+    Parameters
+    ----------
+    y01 : ndarray
+        Binary target labels in {0, 1}.
+
+    f : ndarray
+        Current model scores in full log-odds units.
+
+    Returns
+    -------
+    tuple
+        (g, h): Gradient and Hessian arrays.
+    """
+    y01 = np.asarray(y01, dtype=float)
+    f = np.asarray(f, dtype=float)
+
+    if y01.shape != f.shape:
+        raise ValueError("y01 and f must have the same shape.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(f)):
+        raise ValueError("f must contain finite values.")
+
+    # Calculate sigmoid(f) in a numerically stable manner.
+    # np.logaddexp avoids overflow for large positive or negative scores.
+    p = np.exp(-np.logaddexp(0.0, -f))
+
+    # First derivative of logistic loss.
+    g = p - y01
+
+    # Second derivative of logistic loss.
+    h = p * (1.0 - p)
+
+    return g, h
+
+
+def tree_objective(tree, lam=0.0, gamma=0.0):
+    """
+    Calculate the regularized objective value of a grown tree.
+
+    Formula:
+        L = -0.5 * sum(w_j**2 * (H_j + lam)) + gamma * J
+
+    where:
+        w_j is the optimized leaf value,
+        H_j is the leaf's Hessian cover,
+        J is the number of leaves.
+
+    Parameters
+    ----------
+    tree : dict
+        Tree containing feature, value and cover arrays.
+
+    lam : float
+        L2 regularization parameter.
+
+    gamma : float
+        Penalty for each leaf.
+
+    Returns
+    -------
+    float
+        Regularized tree objective value.
+    """
+    feature = np.asarray(tree["feature"])
+    value = np.asarray(tree["value"], dtype=float)
+    cover = np.asarray(tree["cover"], dtype=float)
+
+    if feature.ndim != 1 or value.ndim != 1 or cover.ndim != 1:
+        raise ValueError("Tree arrays must be one-dimensional.")
+
+    if not (len(feature) == len(value) == len(cover)):
+        raise ValueError("Tree arrays must have equal lengths.")
+
+    if not np.isfinite(lam) or lam < 0:
+        raise ValueError("lam must be a non-negative finite number.")
+
+    if not np.isfinite(gamma):
+        raise ValueError("gamma must be finite.")
+
+    if not np.all(np.isfinite(value)) or not np.all(np.isfinite(cover)):
+        raise ValueError("Leaf values and covers must be finite.")
+
+    if np.any(cover < 0):
+        raise ValueError("Leaf covers must be non-negative.")
+
+    # Identify actual leaf nodes.
+    leaf_mask = feature == -1
+
+    # Extract optimized leaf values and their Hessian covers.
+    leaf_values = value[leaf_mask]
+    leaf_covers = cover[leaf_mask]
+
+    J = len(leaf_values)
+
+    if J == 0:
+        raise ValueError("The tree must contain at least one leaf.")
+
+    # Calculate the regularized contribution of every leaf.
+    leaf_contributions = -0.5 * (
+        leaf_values ** 2 * (leaf_covers + lam)
+    )
+
+    # Add the penalty for the number of leaves.
+    objective = np.sum(leaf_contributions) + gamma * J
+
+    return float(objective)
+
