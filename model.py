@@ -1779,3 +1779,198 @@ def logitboost_fit(X, y01, M=100, max_depth=1, nu=1.0,
 
     return model
 
+# Step 16 - label_noise_study
+def flip_labels(y01, rate, seed=0):
+    """
+    Randomly flip a specified fraction of binary labels.
+
+    Parameters
+    ----------
+    y01 : ndarray of shape (n,)
+        Original binary labels in {0, 1}.
+
+    rate : float
+        Probability of flipping each label.
+
+    seed : int or None
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    tuple
+        noisy : ndarray
+            Labels after randomly flipping selected examples.
+
+        flip : ndarray of bool
+            Boolean mask indicating which labels were flipped.
+    """
+    y01 = np.asarray(y01, dtype=float)
+
+    if y01.ndim != 1:
+        raise ValueError("y01 must be a 1D array.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only binary labels (0 or 1).")
+
+    if not np.isscalar(rate) or not np.isfinite(rate) or not 0.0 <= rate <= 1.0:
+        raise ValueError("rate must be a number between 0 and 1.")
+
+    # Generate a reproducible random flip mask.
+    rng = np.random.default_rng(seed)
+    flip = rng.random(len(y01)) < rate
+
+    # Create a copy and invert the selected labels.
+    noisy = y01.copy()
+    noisy[flip] = 1.0 - noisy[flip]
+
+    return noisy, flip
+
+
+def label_noise_study(X_train, y_train, X_test, y_test,
+                      rates, M=200, seed=0):
+    """
+    Compare AdaBoost and LogitBoost under different levels of
+    training-label noise.
+
+    Both models are trained using the noisy training labels.
+    Their performance is evaluated against the clean test labels.
+
+    Parameters
+    ----------
+    X_train : ndarray
+        Training feature matrix.
+
+    y_train : ndarray
+        Original clean training labels in {0, 1}.
+
+    X_test : ndarray
+        Test feature matrix.
+
+    y_test : ndarray
+        Clean test labels in {0, 1}.
+
+    rates : iterable
+        Label-flipping probabilities to evaluate.
+
+    M : int
+        Number of boosting rounds.
+
+    seed : int
+        Random seed used for label flipping.
+
+    Returns
+    -------
+    dict
+        Maps each noise rate to:
+        ada_error             : AdaBoost test error.
+        logit_error           : LogitBoost test error.
+        ada_weight_on_flipped : AdaBoost weight on flipped examples.
+        logit_weight_on_flipped : LogitBoost weight on flipped examples.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    if X_train.ndim != 2 or X_test.ndim != 2:
+        raise ValueError("X_train and X_test must be 2D arrays.")
+
+    if X_train.shape[1] != X_test.shape[1]:
+        raise ValueError("Training and test data must have the same number of features.")
+
+    if y_train.shape != (X_train.shape[0],):
+        raise ValueError("y_train must contain one label per training example.")
+
+    if y_test.shape != (X_test.shape[0],) or len(y_test) == 0:
+        raise ValueError("y_test must contain one label per test example.")
+
+    if not np.all(np.isfinite(y_train)) or not np.all(np.isin(y_train, [0.0, 1.0])):
+        raise ValueError("y_train must contain only binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(y_test)) or not np.all(np.isin(y_test, [0.0, 1.0])):
+        raise ValueError("y_test must contain only binary labels (0 or 1).")
+
+    # Store results for every noise rate.
+    results = {}
+
+    # Convert clean test labels into binary classification targets.
+    true_labels = y_test > 0.5
+
+    # Evaluate each specified label-noise rate.
+    for rate in rates:
+
+        # Generate noisy training labels.
+        # The same seed makes the flip masks nested across rates.
+        noisy, flip = flip_labels(
+            y_train,
+            rate,
+            seed=seed
+        )
+
+        # -----------------------------------------------------
+        # 1. Train AdaBoost on noisy training labels.
+        # -----------------------------------------------------
+        ada_model = adaboost_fit(
+            X_train,
+            noisy,
+            M=M
+        )
+
+        # Predict on the clean test data.
+        ada_scores = additive_predict(
+            ada_model,
+            X_test
+        )
+
+        ada_predictions = ada_scores > 0.0
+
+        # Calculate AdaBoost test classification error.
+        ada_error = float(
+            np.mean(ada_predictions != true_labels)
+        )
+
+        # Calculate the proportion of final AdaBoost weight
+        # assigned to examples whose training labels were flipped.
+        ada_weight_on_flipped = float(
+            np.sum(ada_model["weights"][flip])
+        )
+
+        # -----------------------------------------------------
+        # 2. Train LogitBoost on noisy training labels.
+        # -----------------------------------------------------
+        logit_model = logitboost_fit(
+            X_train,
+            noisy,
+            M=M
+        )
+
+        # Predict on the clean test data.
+        logit_scores = additive_predict(
+            logit_model,
+            X_test
+        )
+
+        logit_predictions = logit_scores > 0.0
+
+        # Calculate LogitBoost test classification error.
+        logit_error = float(
+            np.mean(logit_predictions != true_labels)
+        )
+
+        # Calculate the proportion of final LogitBoost weight
+        # assigned to examples whose training labels were flipped.
+        logit_weight_on_flipped = float(
+            np.sum(logit_model["weights"][flip])
+        )
+
+        # Store the results using plain Python floats.
+        results[float(rate)] = {
+            "ada_error": ada_error,
+            "logit_error": logit_error,
+            "ada_weight_on_flipped": ada_weight_on_flipped,
+            "logit_weight_on_flipped": logit_weight_on_flipped
+        }
+
+    return results
+

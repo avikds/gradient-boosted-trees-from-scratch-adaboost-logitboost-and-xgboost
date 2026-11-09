@@ -25,6 +25,7 @@ python scaffold.py
 - [x] **13.** probability_report
 - [x] **14.** working_response
 - [x] **15.** logitboost_fit
+- [x] **16.** label_noise_study
 
 ---
 
