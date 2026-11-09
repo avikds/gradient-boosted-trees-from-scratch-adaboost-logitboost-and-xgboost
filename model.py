@@ -4051,3 +4051,212 @@ def forest_fit(X, y01, M=100, max_features=None, max_depth=30,
         "oob_error": oob_error
     }
 
+# Step 27 - ensemble_error_curves
+def staged_error(model, X, y01, average=False, threshold=0.0):
+    """
+    Calculate classification error after 1, 2, ..., M trees.
+
+    Parameters
+    ----------
+    model : dict
+        Fitted additive ensemble model.
+
+    X : ndarray
+        Input feature matrix.
+
+    y01 : ndarray
+        True binary labels in {0, 1}.
+
+    average : bool
+        If True, calculate the plain average of the first m trees.
+
+    threshold : float
+        Classification threshold.
+
+    Returns
+    -------
+    ndarray
+        Classification error after each ensemble stage.
+    """
+    X = np.asarray(X)
+    y01 = np.asarray(y01, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if y01.ndim != 1 or len(y01) != X.shape[0]:
+        raise ValueError("y01 must contain one label per row of X.")
+
+    if not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only binary labels (0 or 1).")
+
+    if not np.isfinite(threshold):
+        raise ValueError("threshold must be finite.")
+
+    # Calculate predictions after every stage in one pass.
+    staged_predictions = staged_predict(model, X)
+
+    M = len(model["trees"])
+
+    if M == 0:
+        return np.empty(0, dtype=float)
+
+    # Exclude the initial prediction before any trees.
+    scores = staged_predictions[1:].copy()
+
+    if average:
+        # Convert the stored partial additive sums into the
+        # ordinary average of the first m trees.
+        stage_counts = np.arange(1, M + 1, dtype=float)
+
+        scores *= (M / stage_counts)[:, None]
+
+    # Apply the specified classification threshold.
+    predicted_labels = scores > threshold
+    true_labels = y01 > 0.5
+
+    # Calculate error independently for every stage.
+    errors = np.mean(
+        predicted_labels != true_labels[None, :],
+        axis=1
+    )
+
+    return errors.astype(float)
+
+
+def ensemble_error_curves(X_train, y_train, X_test, y_test,
+                          M_forest=100, M_boost=200,
+                          nu=0.1, max_depth=4, seed=0):
+    """
+    Compare test-error curves for bagging, random forests
+    and gradient boosting.
+
+    Parameters
+    ----------
+    X_train : ndarray
+        Training features.
+
+    y_train : ndarray
+        Binary training labels.
+
+    X_test : ndarray
+        Test features.
+
+    y_test : ndarray
+        Binary test labels.
+
+    M_forest : int
+        Number of trees for bagging and random forests.
+
+    M_boost : int
+        Number of boosting rounds.
+
+    nu : float
+        Gradient boosting learning rate.
+
+    max_depth : int
+        Maximum depth used by gradient boosting.
+
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    dict
+        bagging, random_forest and boosting error arrays.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    if X_train.ndim != 2 or X_test.ndim != 2:
+        raise ValueError("Training and test features must be 2D arrays.")
+
+    if X_train.shape[1] != X_test.shape[1]:
+        raise ValueError("Training and test data must have the same features.")
+
+    if y_train.shape != (X_train.shape[0],):
+        raise ValueError("y_train must contain one label per training row.")
+
+    if y_test.shape != (X_test.shape[0],) or len(y_test) == 0:
+        raise ValueError("y_test must contain one label per test row.")
+
+    if not np.all(np.isin(y_train, [0.0, 1.0])):
+        raise ValueError("y_train must contain only 0 and 1.")
+
+    if not np.all(np.isin(y_test, [0.0, 1.0])):
+        raise ValueError("y_test must contain only 0 and 1.")
+
+    # ---------------------------------------------------------
+    # 1. Bagging
+    # ---------------------------------------------------------
+    # IMPORTANT: Use forest_fit's default max_depth=30.
+    bagging_model = forest_fit(
+        X_train,
+        y_train,
+        M=M_forest,
+        seed=seed
+    )
+
+    bagging_errors = staged_error(
+        bagging_model,
+        X_test,
+        y_test,
+        average=True,
+        threshold=0.5
+    )
+
+    # ---------------------------------------------------------
+    # 2. Random forest
+    # ---------------------------------------------------------
+    # Randomly consider floor(sqrt(p)) features at each node.
+    p = X_train.shape[1]
+    n_features = max(1, int(np.sqrt(p)))
+
+    # IMPORTANT: Also retain forest_fit's default max_depth=30.
+    random_forest_model = forest_fit(
+        X_train,
+        y_train,
+        M=M_forest,
+        max_features=n_features,
+        seed=seed
+    )
+
+    random_forest_errors = staged_error(
+        random_forest_model,
+        X_test,
+        y_test,
+        average=True,
+        threshold=0.5
+    )
+
+    # ---------------------------------------------------------
+    # 3. Gradient boosting
+    # ---------------------------------------------------------
+    # The specified max_depth applies to boosting.
+    boosting_model = gradient_boost_fit(
+        X_train,
+        y_train,
+        loss="logloss",
+        M=M_boost,
+        nu=nu,
+        max_depth=max_depth,
+        seed=seed
+    )
+
+    boosting_errors = staged_error(
+        boosting_model,
+        X_test,
+        y_test,
+        average=False,
+        threshold=0.0
+    )
+
+    return {
+        "bagging": bagging_errors,
+        "random_forest": random_forest_errors,
+        "boosting": boosting_errors
+    }
+

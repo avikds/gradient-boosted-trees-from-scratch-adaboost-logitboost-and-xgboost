@@ -36,6 +36,7 @@ python scaffold.py
 - [x] **24.** order_study
 - [x] **25.** subsample_study
 - [x] **26.** forest_fit
+- [x] **27.** ensemble_error_curves
 
 ---
 
