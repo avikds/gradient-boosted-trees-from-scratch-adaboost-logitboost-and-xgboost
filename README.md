@@ -35,6 +35,7 @@ python scaffold.py
 - [x] **23.** xgb_fit
 - [x] **24.** order_study
 - [x] **25.** subsample_study
+- [x] **26.** forest_fit
 
 ---
 
