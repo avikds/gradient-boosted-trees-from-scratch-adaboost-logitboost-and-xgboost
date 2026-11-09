@@ -303,3 +303,87 @@ def best_split(G, H, lam=0.0, gamma=0.0, min_child_weight=1e-3):
 
     return (int(best_feature), int(best_t), float(best_gain))
 
+# Step 5 - tree_predict
+def tree_apply(tree, codes):
+    """
+    Send binned examples through a decision tree and return their leaf IDs.
+
+    Parameters
+    ----------
+    tree : dict
+        Dictionary containing the following NumPy arrays:
+        feature, bin, left, right, value, gain, cover.
+
+    codes : ndarray of shape (n, p)
+        Integer-binned feature values for n examples and p features.
+
+    Returns
+    -------
+    ndarray of shape (n,)
+        Integer IDs of the leaf nodes reached by each example.
+    """
+    codes = np.asarray(codes)
+
+    if codes.ndim != 2:
+        raise ValueError("codes must be a 2D array.")
+
+    feature = np.asarray(tree["feature"])
+    bins = np.asarray(tree["bin"])
+    left = np.asarray(tree["left"])
+    right = np.asarray(tree["right"])
+
+    # Initially, every example starts at the root node (node 0).
+    node_ids = np.zeros(codes.shape[0], dtype=int)
+
+    # Traverse until every example has reached a leaf.
+    while True:
+        # Identify examples currently positioned at internal nodes.
+        current_features = feature[node_ids]
+        active_rows = np.flatnonzero(current_features != -1)
+
+        # Stop when all examples have reached leaf nodes.
+        if len(active_rows) == 0:
+            break
+
+        # Get the current node IDs and their splitting features.
+        active_nodes = node_ids[active_rows]
+        split_features = feature[active_nodes]
+
+        # Compare each example's bin code with its node's threshold.
+        go_left = (
+            codes[active_rows, split_features] <= bins[active_nodes]
+        )
+
+        # Update the node IDs according to the split decisions.
+        node_ids[active_rows] = np.where(
+            go_left,
+            left[active_nodes],
+            right[active_nodes]
+        )
+
+    return node_ids
+
+
+def tree_predict(tree, codes):
+    """
+    Predict values using a decision tree.
+
+    Parameters
+    ----------
+    tree : dict
+        Dictionary representing the decision tree.
+
+    codes : ndarray of shape (n, p)
+        Integer-binned feature values.
+
+    Returns
+    -------
+    ndarray of shape (n,)
+        Predicted values from the reached leaf nodes.
+    """
+    # Find the leaf reached by each example.
+    leaf_ids = tree_apply(tree, codes)
+
+    # Return the prediction stored at each reached leaf.
+    return np.asarray(tree["value"])[leaf_ids]
+
