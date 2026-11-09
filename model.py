@@ -581,3 +581,151 @@ def grow_tree(codes, g, h, n_bins, max_depth=3, lam=0.0,
 
     return tree
 
+# Step 7 - prune_tree
+def prune_tree(tree, gamma):
+    """
+    Prune a decision tree bottom-up by collapsing unnecessary splits.
+
+    An internal node is collapsed when both of its children are leaves
+    after pruning and its stored gain is strictly less than gamma.
+
+    The original tree is never modified. The returned tree contains
+    only nodes reachable from the root, with updated child IDs.
+
+    Parameters
+    ----------
+    tree : dict
+        Tree containing feature, bin, left, right, value, gain, cover.
+
+    gamma : float
+        Minimum gain required to retain an internal split.
+
+    Returns
+    -------
+    dict
+        A new, compacted tree in the same format.
+    """
+    feature = np.asarray(tree["feature"])
+    bins = np.asarray(tree["bin"])
+    left = np.asarray(tree["left"])
+    right = np.asarray(tree["right"])
+    value = np.asarray(tree["value"])
+    gain = np.asarray(tree["gain"])
+    cover = np.asarray(tree["cover"])
+
+    n_nodes = len(feature)
+
+    if n_nodes == 0:
+        raise ValueError("The tree must contain at least a root node.")
+
+    if not all(
+        len(arr) == n_nodes
+        for arr in (bins, left, right, value, gain, cover)
+    ):
+        raise ValueError("All tree arrays must have equal lengths.")
+
+    # ---------------------------------------------------------
+    # Pass 1: Determine which internal nodes should be collapsed.
+    # This is performed bottom-up, from leaves toward the root.
+    # ---------------------------------------------------------
+
+    collapsed = np.zeros(n_nodes, dtype=bool)
+
+    def mark_collapsed(node_id):
+        """
+        Determine whether a node becomes a leaf after pruning.
+
+        Returns True if the resulting node is a leaf.
+        """
+        # An existing leaf remains a leaf.
+        if feature[node_id] == -1:
+            return True
+
+        # Process both children before evaluating the current node.
+        left_is_leaf = mark_collapsed(int(left[node_id]))
+        right_is_leaf = mark_collapsed(int(right[node_id]))
+
+        # Collapse only when both children are leaves and
+        # the current node's gain is strictly below gamma.
+        if (
+            left_is_leaf
+            and right_is_leaf
+            and gain[node_id] < gamma
+        ):
+            collapsed[node_id] = True
+            return True
+
+        return False
+
+    # Start bottom-up pruning decisions from the root.
+    mark_collapsed(0)
+
+    # ---------------------------------------------------------
+    # Pass 2: Rebuild the tree using only reachable nodes.
+    # ---------------------------------------------------------
+
+    new_feature = []
+    new_bin = []
+    new_left = []
+    new_right = []
+    new_value = []
+    new_gain = []
+    new_cover = []
+
+    def rebuild(node_id):
+        """
+        Copy a surviving node and its descendants.
+
+        Returns the node's new ID in the rebuilt tree.
+        """
+        new_id = len(new_feature)
+
+        # If the node was collapsed, store it as a leaf.
+        if collapsed[node_id]:
+            new_feature.append(-1)
+            new_bin.append(-1)
+            new_left.append(-1)
+            new_right.append(-1)
+            new_value.append(float(value[node_id]))
+            new_gain.append(0.0)
+            new_cover.append(float(cover[node_id]))
+
+            return new_id
+
+        # Copy the current node's information.
+        new_feature.append(int(feature[node_id]))
+        new_bin.append(int(bins[node_id]))
+        new_left.append(-1)
+        new_right.append(-1)
+        new_value.append(float(value[node_id]))
+        new_gain.append(float(gain[node_id]))
+        new_cover.append(float(cover[node_id]))
+
+        # Existing leaves require no further processing.
+        if feature[node_id] == -1:
+            return new_id
+
+        # Rebuild only the surviving left and right subtrees.
+        left_id = rebuild(int(left[node_id]))
+        right_id = rebuild(int(right[node_id]))
+
+        # Update child references to their new node IDs.
+        new_left[new_id] = left_id
+        new_right[new_id] = right_id
+
+        return new_id
+
+    # Rebuild from the root, ensuring that node 0 remains the root.
+    rebuild(0)
+
+    # Return the compacted tree as NumPy arrays.
+    return {
+        "feature": np.asarray(new_feature, dtype=int),
+        "bin": np.asarray(new_bin, dtype=int),
+        "left": np.asarray(new_left, dtype=int),
+        "right": np.asarray(new_right, dtype=int),
+        "value": np.asarray(new_value, dtype=float),
+        "gain": np.asarray(new_gain, dtype=float),
+        "cover": np.asarray(new_cover, dtype=float)
+    }
+
