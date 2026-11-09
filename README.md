@@ -32,6 +32,8 @@ python scaffold.py
 - [x] **20.** outlier_study
 - [x] **21.** softmax_boost_fit
 - [x] **22.** tree_objective
+- [x] **23.** xgb_fit
+- [x] **24.** order_study
 
 ---
 

@@ -3147,3 +3147,532 @@ def tree_objective(tree, lam=0.0, gamma=0.0):
 
     return float(objective)
 
+# Step 23 - xgb_fit
+def xgb_fit(X, y01, M=100, nu=0.1, max_depth=3, lam=1.0,
+            gamma=0.0, min_child_weight=1.0, subsample=1.0,
+            colsample=1.0, max_bins=64, eval_set=None,
+            patience=None, seed=0):
+    """
+    Fit an XGBoost-style gradient boosting model for binary
+    classification using second-order gradient and Hessian statistics.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y01 : ndarray of shape (n,)
+        Binary training labels in {0, 1}.
+
+    M : int
+        Maximum number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    lam : float
+        L2 regularization parameter.
+
+    gamma : float
+        Minimum split gain required to retain a split.
+
+    min_child_weight : float
+        Minimum total Hessian required in each child.
+
+    subsample : float
+        Fraction of training rows sampled in each round.
+
+    colsample : float
+        Fraction of features considered at each node.
+
+    max_bins : int
+        Maximum number of bins used for feature discretization.
+
+    eval_set : tuple or None
+        Optional validation dataset: (X_val, y_val).
+
+    patience : int or None
+        Number of rounds without improvement before early stopping.
+
+    seed : int
+        Random seed controlling row and feature sampling.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges      : Feature bin thresholds.
+        f0         : Initial score (0.0).
+        trees      : Fitted trees.
+        scale      : Learning-rate multipliers.
+        train_loss : Training logistic loss after each executed round.
+        val_loss   : Validation logistic loss after each executed round.
+        best_M     : Number of trees retained in the model.
+    """
+
+    # ---------------------------------------------------------
+    # Validate training data.
+    # ---------------------------------------------------------
+    X = np.asarray(X)
+    y01 = np.asarray(y01, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n, p = X.shape
+
+    if n == 0 or p == 0:
+        raise ValueError("X must contain at least one row and one feature.")
+
+    if y01.shape != (n,):
+        raise ValueError("y01 must contain one label per training example.")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain finite values.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only binary labels (0 or 1).")
+
+    if not isinstance(M, (int, np.integer)) or isinstance(M, (bool, np.bool_)) or M < 0:
+        raise ValueError("M must be a non-negative integer.")
+
+    if not np.isfinite(nu):
+        raise ValueError("nu must be finite.")
+
+    if not np.isfinite(lam) or lam < 0:
+        raise ValueError("lam must be non-negative and finite.")
+
+    if not np.isfinite(gamma) or gamma < 0:
+        raise ValueError("gamma must be non-negative and finite.")
+
+    if not np.isfinite(min_child_weight) or min_child_weight < 0:
+        raise ValueError("min_child_weight must be non-negative and finite.")
+
+    if not np.isfinite(subsample) or not 0.0 < subsample <= 1.0:
+        raise ValueError("subsample must belong to (0, 1].")
+
+    if not np.isfinite(colsample) or not 0.0 < colsample <= 1.0:
+        raise ValueError("colsample must belong to (0, 1].")
+
+    if patience is not None:
+        if (
+            not isinstance(patience, (int, np.integer))
+            or isinstance(patience, (bool, np.bool_))
+            or patience < 1
+        ):
+            raise ValueError("patience must be a positive integer.")
+
+    # ---------------------------------------------------------
+    # Validate and prepare the optional validation dataset.
+    # ---------------------------------------------------------
+    if eval_set is not None:
+        if len(eval_set) != 2:
+            raise ValueError("eval_set must contain (X_val, y_val).")
+
+        X_val = np.asarray(eval_set[0])
+        y_val = np.asarray(eval_set[1], dtype=float)
+
+        if X_val.ndim != 2 or X_val.shape[1] != p:
+            raise ValueError("X_val must have the same number of features as X.")
+
+        if len(y_val) != X_val.shape[0] or len(y_val) == 0:
+            raise ValueError("y_val must contain one label per validation example.")
+
+        if not np.all(np.isfinite(X_val)):
+            raise ValueError("X_val must contain finite values.")
+
+        if not np.all(np.isfinite(y_val)) or not np.all(np.isin(y_val, [0.0, 1.0])):
+            raise ValueError("y_val must contain only binary labels (0 or 1).")
+
+    else:
+        X_val = None
+        y_val = None
+
+    # ---------------------------------------------------------
+    # Fit feature bins once using the training data.
+    # ---------------------------------------------------------
+    edges = fit_bins(X, max_bins=max_bins)
+
+    codes = apply_bins(X, edges)
+    nb = n_bins_of(edges)
+
+    # Bin validation data using the training thresholds.
+    if eval_set is not None:
+        val_codes = apply_bins(X_val, edges)
+    else:
+        val_codes = None
+
+    # Initial full-log-odds scores are zero.
+    f = np.zeros(n, dtype=float)
+    f_val = (
+        np.zeros(len(y_val), dtype=float)
+        if eval_set is not None
+        else None
+    )
+
+    # Initialize the random generator.
+    rng = np.random.default_rng(seed)
+
+    # Determine the number of features sampled at each node.
+    if colsample < 1.0:
+        max_features = max(1, int(round(colsample * p)))
+    else:
+        max_features = None
+
+    # Store fitted trees, scales and loss histories.
+    trees = []
+    scales = []
+    train_loss = []
+    val_loss = []
+
+    # Track validation performance for early stopping.
+    best_val_loss = np.inf
+    best_M = 0
+
+    # Early stopping is active only when both validation data
+    # and patience are provided.
+    use_early_stopping = (
+        eval_set is not None and patience is not None
+    )
+
+    # ---------------------------------------------------------
+    # Main XGBoost boosting loop.
+    # ---------------------------------------------------------
+    for m in range(M):
+
+        # Step 1: Calculate gradients and Hessians at current scores.
+        g, h = logistic_grad_hess(y01, f)
+
+        # Select the training rows for this boosting round.
+        if subsample < 1.0:
+
+            sample_size = int(round(subsample * n))
+
+            if sample_size < 1:
+                raise ValueError(
+                    "subsample selects zero training rows; increase subsample."
+                )
+
+            rows = rng.choice(
+                n,
+                size=sample_size,
+                replace=False
+            )
+
+        else:
+            rows = np.arange(n)
+
+        # Step 2: Grow the tree using the sampled rows.
+        #
+        # gamma is set to zero during growth because the specified
+        # workflow applies gamma through bottom-up pruning afterward.
+        tree = grow_tree(
+            codes[rows],
+            g[rows],
+            h[rows],
+            nb,
+            max_depth=max_depth,
+            lam=lam,
+            gamma=0.0,
+            min_child_weight=min_child_weight,
+            max_features=max_features,
+            rng=rng
+        )
+
+        # Step 3: Apply bottom-up pruning when gamma > 0.
+        if gamma > 0.0:
+            tree = prune_tree(tree, gamma)
+
+        # Step 4: Update predictions on ALL training examples.
+        tree_prediction = tree_predict(tree, codes)
+
+        f += nu * tree_prediction
+
+        # Store the fitted tree and learning-rate multiplier.
+        trees.append(tree)
+        scales.append(float(nu))
+
+        # Calculate training logistic loss in full-log-odds units.
+        signed_y = 2.0 * y01 - 1.0
+
+        current_train_loss = float(
+            np.mean(
+                np.logaddexp(0.0, -signed_y * f)
+            )
+        )
+
+        train_loss.append(current_train_loss)
+
+        # -----------------------------------------------------
+        # Step 5: Evaluate validation performance and early stop.
+        # -----------------------------------------------------
+        if eval_set is not None:
+
+            # Update validation predictions using the same tree.
+            val_prediction = tree_predict(tree, val_codes)
+
+            f_val += nu * val_prediction
+
+            signed_val_y = 2.0 * y_val - 1.0
+
+            current_val_loss = float(
+                np.mean(
+                    np.logaddexp(0.0, -signed_val_y * f_val)
+                )
+            )
+
+            val_loss.append(current_val_loss)
+
+            if use_early_stopping:
+
+                # Use strict comparison so the first round achieving
+                # the lowest validation loss is retained in a tie.
+                if current_val_loss < best_val_loss:
+                    best_val_loss = current_val_loss
+                    best_M = len(trees)
+
+                # Stop when the current round is patience or more
+                # rounds beyond the best validation round.
+                current_round = len(trees)
+
+                if current_round - best_M >= patience:
+                    break
+
+    # ---------------------------------------------------------
+    # Determine how many trees to retain.
+    # ---------------------------------------------------------
+    if use_early_stopping:
+        # Discard trees after the best validation round.
+        trees = trees[:best_M]
+        scales = scales[:best_M]
+
+    else:
+        # Without both validation and patience, retain every tree.
+        best_M = len(trees)
+
+    # ---------------------------------------------------------
+    # Return the fitted model.
+    # ---------------------------------------------------------
+    model = {
+        "edges": edges,
+        "f0": 0.0,
+        "trees": trees,
+        "scale": scales,
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "best_M": int(best_M)
+    }
+
+    return model
+
+# Step 24 - order_study
+def order_study(X_train, y_train, X_test, y_test,
+                M=100, nu=0.1, max_depth=3):
+    """
+    Compare first-order, Newton-leaf, and second-order gradient boosting.
+
+    Three models are trained using binary logistic loss:
+
+    1. first_order:
+       Gradient-based splits with mean-gradient leaf values.
+
+    2. newton_leaves:
+       Gradient-based splits with Newton-optimized leaf values.
+
+    3. second_order:
+       Hessian-weighted splits with Newton-optimized leaf values.
+
+    Parameters
+    ----------
+    X_train : ndarray of shape (n_train, p)
+        Training feature matrix.
+
+    y_train : ndarray of shape (n_train,)
+        Binary training labels in {0, 1}.
+
+    X_test : ndarray of shape (n_test, p)
+        Test feature matrix.
+
+    y_test : ndarray of shape (n_test,)
+        Binary test labels in {0, 1}.
+
+    M : int
+        Number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    Returns
+    -------
+    dict
+        Results for each of the three models containing:
+
+        best_M       : Number of trees at the lowest test log-loss.
+        best_log_loss: Lowest test log-loss.
+        final_log_loss: Test log-loss after all trees.
+        train_log_loss: Training log-loss after all trees.
+        test_error   : Classification error after all trees.
+
+        All metrics except best_M are Python floats.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    # ---------------------------------------------------------
+    # Validate input data.
+    # ---------------------------------------------------------
+    if X_train.ndim != 2 or X_test.ndim != 2:
+        raise ValueError("X_train and X_test must be 2D arrays.")
+
+    if X_train.shape[1] != X_test.shape[1]:
+        raise ValueError("Training and test data must have the same number of features.")
+
+    if y_train.shape != (X_train.shape[0],):
+        raise ValueError("y_train must contain one label per training example.")
+
+    if y_test.shape != (X_test.shape[0],) or len(y_test) == 0:
+        raise ValueError("y_test must contain one label per test example.")
+
+    if not np.all(np.isfinite(X_train)) or not np.all(np.isfinite(X_test)):
+        raise ValueError("Feature matrices must contain finite values.")
+
+    if (
+        not np.all(np.isfinite(y_train))
+        or not np.all(np.isin(y_train, [0.0, 1.0]))
+    ):
+        raise ValueError("y_train must contain only binary labels (0 or 1).")
+
+    if (
+        not np.all(np.isfinite(y_test))
+        or not np.all(np.isin(y_test, [0.0, 1.0]))
+    ):
+        raise ValueError("y_test must contain only binary labels (0 or 1).")
+
+    # ---------------------------------------------------------
+    # Define the three models.
+    # ---------------------------------------------------------
+
+    # First-order model:
+    # Gradient-based splits and mean-gradient leaf values.
+    first_order_model = gradient_boost_fit(
+        X_train,
+        y_train,
+        loss="logloss",
+        M=M,
+        nu=nu,
+        max_depth=max_depth,
+        resolve=False
+    )
+
+    # Newton-leaves model:
+    # Gradient-based splits and Newton-reoptimized leaf values.
+    newton_leaves_model = gradient_boost_fit(
+        X_train,
+        y_train,
+        loss="logloss",
+        M=M,
+        nu=nu,
+        max_depth=max_depth,
+        resolve=True
+    )
+
+    # Second-order model:
+    # Hessian-weighted splits and Newton leaf values.
+    second_order_model = xgb_fit(
+        X_train,
+        y_train,
+        M=M,
+        nu=nu,
+        max_depth=max_depth,
+        lam=0.0,
+        min_child_weight=1e-3
+    )
+
+    # Collect all three fitted models.
+    models = {
+        "first_order": first_order_model,
+        "newton_leaves": newton_leaves_model,
+        "second_order": second_order_model
+    }
+
+    # Convert labels into signed form for logistic loss.
+    signed_train = 2.0 * y_train - 1.0
+    signed_test = 2.0 * y_test - 1.0
+
+    results = {}
+
+    # ---------------------------------------------------------
+    # Evaluate each model.
+    # ---------------------------------------------------------
+    for name, model in models.items():
+
+        # Calculate predictions at every stage, including stage 0.
+        # Each row represents predictions after a given number of trees.
+        train_predictions = staged_predict(model, X_train)
+        test_predictions = staged_predict(model, X_test)
+
+        # -----------------------------------------------------
+        # Calculate test log-loss at every boosting stage.
+        # -----------------------------------------------------
+        test_stage_loss = np.mean(
+            np.logaddexp(
+                0.0,
+                -signed_test[None, :] * test_predictions
+            ),
+            axis=1
+        )
+
+        # Select the first stage with the lowest test log-loss.
+        best_M = int(np.argmin(test_stage_loss))
+
+        best_log_loss = float(test_stage_loss[best_M])
+
+        # Test log-loss after all boosting rounds.
+        final_log_loss = float(test_stage_loss[-1])
+
+        # -----------------------------------------------------
+        # Calculate training log-loss using the full ensemble.
+        # -----------------------------------------------------
+        final_train_predictions = train_predictions[-1]
+
+        train_log_loss = float(
+            np.mean(
+                np.logaddexp(
+                    0.0,
+                    -signed_train * final_train_predictions
+                )
+            )
+        )
+
+        # -----------------------------------------------------
+        # Calculate test classification error after all trees.
+        # -----------------------------------------------------
+        final_test_predictions = test_predictions[-1]
+
+        predicted_labels = final_test_predictions > 0.0
+        true_labels = y_test > 0.5
+
+        test_error = float(
+            np.mean(predicted_labels != true_labels)
+        )
+
+        # Store all metrics.
+        results[name] = {
+            "best_M": best_M,
+            "best_log_loss": best_log_loss,
+            "final_log_loss": final_log_loss,
+            "train_log_loss": train_log_loss,
+            "test_error": test_error
+        }
+
+    return results
+
