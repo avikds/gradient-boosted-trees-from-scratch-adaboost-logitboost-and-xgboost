@@ -15,6 +15,7 @@ python scaffold.py
 - [x] **3.** gradient_histograms
 - [x] **4.** best_split
 - [x] **5.** tree_predict
+- [x] **6.** grow_tree
 
 ---
 

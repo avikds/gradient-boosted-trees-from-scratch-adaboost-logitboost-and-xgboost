@@ -387,3 +387,197 @@ def tree_predict(tree, codes):
     # Return the prediction stored at each reached leaf.
     return np.asarray(tree["value"])[leaf_ids]
 
+# Step 6 - grow_tree
+def grow_tree(codes, g, h, n_bins, max_depth=3, lam=0.0,
+              gamma=0.0, min_child_weight=1e-3,
+              max_features=None, rng=None):
+    """
+    Grow a decision tree greedily using per-example gradients and Hessians.
+
+    Parameters
+    ----------
+    codes : ndarray of shape (n, p)
+        Binned feature values.
+
+    g : ndarray of shape (n,)
+        Per-example gradients.
+
+    h : ndarray of shape (n,)
+        Per-example Hessians.
+
+    n_bins : int
+        Number of bins for each feature.
+
+    max_depth : int
+        Maximum tree depth. The root has depth zero.
+
+    lam : float
+        L2 regularization parameter.
+
+    gamma : float
+        Split penalty.
+
+    min_child_weight : float
+        Minimum total Hessian required in each child.
+
+    max_features : int or None
+        Number of randomly selected features considered at each node.
+        If None, all features are considered.
+
+    rng : random generator or None
+        Random number generator used for feature subsampling.
+
+    Returns
+    -------
+    dict
+        Tree represented by equal-length NumPy arrays:
+        feature, bin, left, right, value, gain, cover.
+    """
+    codes = np.asarray(codes)
+    g = np.asarray(g, dtype=float)
+    h = np.asarray(h, dtype=float)
+
+    if codes.ndim != 2:
+        raise ValueError("codes must be a 2D array.")
+
+    n, p = codes.shape
+
+    if n == 0:
+        raise ValueError("codes must contain at least one example.")
+
+    if g.shape != (n,) or h.shape != (n,):
+        raise ValueError("g and h must have length equal to the number of rows in codes.")
+
+    if not isinstance(n_bins, (int, np.integer)) or n_bins < 1:
+        raise ValueError("n_bins must be a positive integer.")
+
+    if not isinstance(max_depth, (int, np.integer)) or max_depth < 0:
+        raise ValueError("max_depth must be a non-negative integer.")
+
+    if max_features is not None:
+        if (
+            not isinstance(max_features, (int, np.integer))
+            or isinstance(max_features, (bool, np.bool_))
+        ):
+            raise ValueError("max_features must be a positive integer or None.")
+
+        if max_features < 1 or max_features > p:
+            raise ValueError("max_features must be between 1 and the number of features.")
+
+    # Initialize the random number generator when feature subsampling is used.
+    if max_features is not None and rng is None:
+        rng = np.random.default_rng()
+    elif isinstance(rng, (int, np.integer)):
+        rng = np.random.default_rng(rng)
+
+    # Lists holding the information for every tree node.
+    feature_nodes = []
+    bin_nodes = []
+    left_nodes = []
+    right_nodes = []
+    value_nodes = []
+    gain_nodes = []
+    cover_nodes = []
+
+    def build_node(rows, depth):
+        """
+        Recursively construct a node and its descendants.
+
+        rows contains the indices of examples belonging to this node.
+        """
+
+        node_id = len(feature_nodes)
+
+        # Calculate the gradient and Hessian sums for this node.
+        G_sum = np.sum(g[rows])
+        H_sum = np.sum(h[rows])
+
+        # Every node is initially created as a leaf.
+        # A valid split will update its feature and child information.
+        feature_nodes.append(-1)
+        bin_nodes.append(-1)
+        left_nodes.append(-1)
+        right_nodes.append(-1)
+
+        # Store the optimal leaf prediction and total Hessian.
+        value_nodes.append(float(leaf_weight(G_sum, H_sum, lam)))
+        gain_nodes.append(0.0)
+        cover_nodes.append(float(H_sum))
+
+        # A node at maximum depth must remain a leaf.
+        if depth >= max_depth:
+            return node_id
+
+        # Select the features considered by this node.
+        if max_features is None:
+            feature_indices = np.arange(p)
+        else:
+            # Draw a fresh subset without replacement at every node.
+            # Sorting preserves tie-breaking by original feature index.
+            feature_indices = np.sort(
+                rng.choice(p, size=max_features, replace=False)
+            )
+
+        # Calculate gradient and Hessian histograms for this node.
+        G_hist, H_hist = gradient_histograms(
+            codes[rows][:, feature_indices],
+            g[rows],
+            h[rows],
+            n_bins
+        )
+
+        # Find the best permissible split.
+        split = best_split(
+            G_hist,
+            H_hist,
+            lam=lam,
+            gamma=gamma,
+            min_child_weight=min_child_weight
+        )
+
+        # Keep this node as a leaf if no worthwhile split exists.
+        if split is None:
+            return node_id
+
+        local_feature, t, gain = split
+
+        # Convert the selected feature's local index to its original index.
+        real_feature = int(feature_indices[local_feature])
+
+        # Divide the examples according to the selected split.
+        go_left = codes[rows, real_feature] <= t
+
+        left_rows = rows[go_left]
+        right_rows = rows[~go_left]
+
+        # Store the split information in the current node.
+        feature_nodes[node_id] = real_feature
+        bin_nodes[node_id] = int(t)
+        gain_nodes[node_id] = float(gain)
+
+        # Recursively grow the left and right child nodes.
+        left_child = build_node(left_rows, depth + 1)
+        right_child = build_node(right_rows, depth + 1)
+
+        # Store the resulting child node IDs.
+        left_nodes[node_id] = left_child
+        right_nodes[node_id] = right_child
+
+        return node_id
+
+    # Start growing the tree from the root (node 0).
+    build_node(np.arange(n), depth=0)
+
+    # Convert the node information into NumPy arrays.
+    tree = {
+        "feature": np.asarray(feature_nodes, dtype=int),
+        "bin": np.asarray(bin_nodes, dtype=int),
+        "left": np.asarray(left_nodes, dtype=int),
+        "right": np.asarray(right_nodes, dtype=int),
+        "value": np.asarray(value_nodes, dtype=float),
+        "gain": np.asarray(gain_nodes, dtype=float),
+        "cover": np.asarray(cover_nodes, dtype=float)
+    }
+
+    return tree
+
