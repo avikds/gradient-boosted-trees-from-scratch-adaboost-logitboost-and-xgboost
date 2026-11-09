@@ -1490,3 +1490,74 @@ def probability_report(y01, p, n_bins=10):
         "error": float(error)
     }
 
+# Step 14 - working_response
+def working_response(y01, f, z_max=4.0):
+    """
+    Calculate the LogitBoost working response and Hessian weights.
+
+    Parameters
+    ----------
+    y01 : ndarray
+        Binary target labels in {0, 1}.
+
+    f : ndarray
+        Current model scores in half-log-odds units.
+
+    z_max : float
+        Maximum absolute value allowed for the working response.
+
+    Returns
+    -------
+    tuple
+        (z, w), where:
+        z : Clipped working responses.
+        w : Hessian weights pi * (1 - pi).
+
+    The implementation avoids dividing by w, ensuring finite
+    working responses even for highly confident predictions.
+    """
+    y01 = np.asarray(y01, dtype=float)
+    f = np.asarray(f, dtype=float)
+
+    # Support scalar inputs and broadcast-compatible arrays.
+    y01, f = np.broadcast_arrays(y01, f)
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only finite binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(f)):
+        raise ValueError("f must contain finite values.")
+
+    if not np.isfinite(z_max) or z_max <= 0:
+        raise ValueError("z_max must be a positive finite number.")
+
+    # Limit extreme scores before multiplying by 2, avoiding
+    # floating-point overflow for very large finite inputs.
+    max_float = np.finfo(float).max
+    f_safe = np.clip(f, -max_float / 2.0, max_float / 2.0)
+
+    # Calculate probabilities using the previously implemented function.
+    pi = half_logit_proba(f_safe)
+
+    # Calculate Hessian weights.
+    w = pi * (1.0 - pi)
+
+    # Calculate the logarithm of the absolute working response.
+    # This avoids directly calculating potentially enormous exponentials.
+    log_abs_z = np.where(
+        y01 == 1.0,
+        np.logaddexp(0.0, -2.0 * f_safe),
+        np.logaddexp(0.0, 2.0 * f_safe)
+    )
+
+    # Apply the maximum allowed absolute response in log space.
+    log_abs_z = np.minimum(log_abs_z, np.log(z_max))
+
+    # Recover the bounded absolute working response.
+    abs_z = np.exp(log_abs_z)
+
+    # Apply the correct sign according to the binary target.
+    z = np.where(y01 == 1.0, abs_z, -abs_z)
+
+    return z, w
+

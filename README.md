@@ -23,6 +23,7 @@ python scaffold.py
 - [x] **11.** weighted_stump
 - [x] **12.** adaboost_fit
 - [x] **13.** probability_report
+- [x] **14.** working_response
 
 ---
 
