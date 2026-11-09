@@ -829,3 +829,120 @@ def staged_predict(model, X):
 
     return predictions
 
+# Step 9 - l2boost_fit
+def l2boost_fit(X, y, M=100, nu=1.0, max_depth=2, max_bins=64):
+    """
+    Fit a least-squares gradient boosting model.
+
+    Each successive tree is trained on the residuals of the current
+    ensemble using squared-error gradient and Hessian statistics.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y : ndarray of shape (n,)
+        Target values.
+
+    M : int
+        Number of boosting rounds (trees).
+
+    nu : float
+        Learning rate applied to every tree.
+
+    max_depth : int
+        Maximum depth of each decision tree.
+
+    max_bins : int
+        Maximum number of bins used when discretizing features.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges       : Feature bin thresholds.
+        f0          : Initial prediction (mean of y).
+        trees       : List of fitted decision trees.
+        scale       : Learning rate for each tree.
+        train_mse   : Training MSE after each boosting round.
+    """
+    X = np.asarray(X)
+    y = np.asarray(y, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if y.ndim != 1 or len(y) != X.shape[0]:
+        raise ValueError("y must be a 1D array with one target per row of X.")
+
+    if len(y) == 0:
+        raise ValueError("Training data must contain at least one example.")
+
+    if not isinstance(M, (int, np.integer)) or isinstance(M, (bool, np.bool_)) or M < 0:
+        raise ValueError("M must be a non-negative integer.")
+
+    # Fit bin thresholds once and transform the training features.
+    edges = fit_bins(X, max_bins=max_bins)
+    codes = apply_bins(X, edges)
+    nb = n_bins_of(edges)
+
+    # Initial model prediction: mean of the target values.
+    f0 = float(np.mean(y))
+
+    # Initialize current predictions with the constant model.
+    predictions = np.full(len(y), f0, dtype=float)
+
+    # Store the fitted trees, their learning-rate multipliers,
+    # and the training MSE after every boosting round.
+    trees = []
+    scales = []
+    train_mse = []
+
+    # Hessians for squared-error loss are equal to one.
+    h = np.ones(len(y), dtype=float)
+
+    # Perform M sequential boosting rounds.
+    for m in range(M):
+
+        # Calculate residuals of the current ensemble.
+        residuals = y - predictions
+
+        # For squared-error boosting:
+        # gradient = -residual and Hessian = 1.
+        g = -residuals
+
+        # Fit a tree to the current residuals.
+        tree = grow_tree(
+            codes,
+            g,
+            h,
+            nb,
+            max_depth=max_depth
+        )
+
+        # Obtain the predictions of the newly fitted tree.
+        tree_predictions = tree_predict(tree, codes)
+
+        # Update the ensemble predictions using the learning rate.
+        predictions += nu * tree_predictions
+
+        # Store the fitted tree and its corresponding scale.
+        trees.append(tree)
+        scales.append(nu)
+
+        # Record training MSE after this boosting round.
+        mse = float(np.mean((y - predictions) ** 2))
+        train_mse.append(mse)
+
+    # Return the additive model.
+    model = {
+        "edges": edges,
+        "f0": f0,
+        "trees": trees,
+        "scale": scales,
+        "train_mse": train_mse
+    }
+
+    return model
+

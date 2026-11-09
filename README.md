@@ -18,6 +18,7 @@ python scaffold.py
 - [x] **6.** grow_tree
 - [x] **7.** prune_tree
 - [x] **8.** additive_predict
+- [x] **9.** l2boost_fit
 
 ---
 
