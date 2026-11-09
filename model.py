@@ -4194,12 +4194,12 @@ def ensemble_error_curves(X_train, y_train, X_test, y_test,
 # Step 28 - bias_variance_study
 def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
     """
-    Measure the squared bias and variance of multiple fitting procedures.
+    Measure squared bias and variance for multiple fitting procedures.
 
     Parameters
     ----------
     draw : callable
-        Function draw(seed) returning a new training dataset (X, y).
+        draw(seed) returns a new training dataset (X, y).
 
     x_test : ndarray
         Test input points.
@@ -4208,12 +4208,8 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
         True noise-free function values at x_test.
 
     fitters : dict
-        Dictionary mapping model names to fitting functions.
-
-        Each fitting function must have the signature:
-            fit_predict(X, y, x_test)
-
-        It must return predictions at x_test.
+        Mapping from model names to functions with signature:
+        fit_predict(X, y, x_test).
 
     n_draws : int
         Number of independently generated training datasets.
@@ -4221,9 +4217,9 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
     Returns
     -------
     dict
-        Maps each fitter name to:
-        bias2    : Mean squared bias over x_test.
-        variance : Mean prediction variance over x_test.
+        Each model name maps to:
+        bias2
+        variance
     """
     x_test = np.asarray(x_test)
     f_test = np.asarray(f_test, dtype=float)
@@ -4236,20 +4232,19 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
         raise ValueError("n_draws must be a positive integer.")
 
     if f_test.size == 0 or not np.all(np.isfinite(f_test)):
-        raise ValueError("f_test must contain finite, non-empty values.")
+        raise ValueError("f_test must contain finite values.")
 
-    # Store predictions separately for each fitting procedure.
+    # Store predictions from every training draw.
     predictions = {
         name: [] for name in fitters
     }
 
-    # Generate n_draws independent training datasets.
+    # Generate training datasets using seeds 0 through n_draws - 1.
     for seed in range(n_draws):
 
-        # Draw one training dataset for this iteration.
         X, y = draw(seed)
 
-        # Evaluate every fitting procedure on the same training draw.
+        # Run every fitting procedure on the same training draw.
         for name, fit_predict in fitters.items():
 
             pred = np.asarray(
@@ -4259,8 +4254,7 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
 
             if pred.shape != f_test.shape:
                 raise ValueError(
-                    f"Predictions from '{name}' must have the same "
-                    "shape as f_test."
+                    f"Predictions from '{name}' must match the shape of f_test."
                 )
 
             if not np.all(np.isfinite(pred)):
@@ -4270,24 +4264,24 @@ def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
 
             predictions[name].append(pred)
 
-    # Calculate bias squared and variance for every fitter.
     results = {}
 
+    # Calculate bias squared and variance for each fitting procedure.
     for name, pred_list in predictions.items():
 
         # Shape: (n_draws, number of test points).
         pred_array = np.stack(pred_list, axis=0)
 
-        # Average predictions across all training draws.
+        # Mean prediction across training datasets.
         mean_prediction = np.mean(pred_array, axis=0)
 
-        # Squared bias averaged over test points.
+        # Squared bias averaged across test points.
         bias2 = np.mean(
             (mean_prediction - f_test) ** 2
         )
 
-        # Prediction variance averaged over test points.
-        # Uses NumPy's default ddof=0.
+        # Variance averaged across test points.
+        # ddof=0 is NumPy's default.
         variance = np.mean(
             np.var(pred_array, axis=0)
         )
