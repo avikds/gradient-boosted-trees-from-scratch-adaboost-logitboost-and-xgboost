@@ -208,3 +208,98 @@ def gradient_histograms(codes, g, h, n_bins):
 
     return G, H
 
+# Step 4 - best_split
+def best_split(G, H, lam=0.0, gamma=0.0, min_child_weight=1e-3):
+    """
+    Find the best split using gradient and Hessian histograms.
+
+    Parameters
+    ----------
+    G : ndarray of shape (p, n_bins)
+        Gradient sums for each feature and bin.
+
+    H : ndarray of shape (p, n_bins)
+        Hessian sums for each feature and bin.
+
+    lam : float
+        L2 regularization parameter.
+
+    gamma : float
+        Minimum gain required to justify a split.
+
+    min_child_weight : float
+        Minimum total Hessian required in each child.
+
+    Returns
+    -------
+    tuple or None
+        (feature, t, gain) for the best split, or None if no
+        worthwhile split is available.
+    """
+    G = np.asarray(G, dtype=float)
+    H = np.asarray(H, dtype=float)
+
+    if G.ndim != 2 or H.ndim != 2:
+        raise ValueError("G and H must be 2D arrays.")
+
+    if G.shape != H.shape:
+        raise ValueError("G and H must have the same shape.")
+
+    p, n_bins = G.shape
+
+    # A split is impossible if there is only one bin.
+    if n_bins <= 1:
+        return None
+
+    best_gain = -np.inf
+    best_feature = None
+    best_t = None
+
+    # Examine features in ascending order.
+    for j in range(p):
+
+        # Compute cumulative gradient and Hessian sums.
+        # The cumulative sums allow efficient evaluation of every threshold.
+        G_left = np.cumsum(G[j])
+        H_left = np.cumsum(H[j])
+
+        # Total gradient and Hessian sums for this feature.
+        G_total = G_left[-1]
+        H_total = H_left[-1]
+
+        # Examine all valid split positions.
+        for t in range(n_bins - 1):
+
+            # Statistics for the left child (bins 0 through t).
+            GL = G_left[t]
+            HL = H_left[t]
+
+            # Statistics for the right child (bins t+1 onward).
+            GR = G_total - GL
+            HR = H_total - HL
+
+            # Both children must satisfy the minimum Hessian requirement.
+            if HL < min_child_weight or HR < min_child_weight:
+                continue
+
+            # Calculate the gain using the previously implemented function.
+            gain = split_gain(
+                GL, HL,
+                GR, HR,
+                lam=lam,
+                gamma=gamma
+            )
+
+            # Use strict comparison so ties retain the first candidate:
+            # lowest feature index, then lowest threshold index.
+            if gain > best_gain:
+                best_gain = float(gain)
+                best_feature = j
+                best_t = t
+
+    # Reject splits that do not provide a meaningful improvement.
+    if best_feature is None or best_gain <= 1e-12:
+        return None
+
+    return (int(best_feature), int(best_t), float(best_gain))
+
