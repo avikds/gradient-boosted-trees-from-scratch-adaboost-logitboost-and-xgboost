@@ -3821,13 +3821,12 @@ def subsample_study(X_train, y_train, X_test, y_test,
 def forest_fit(X, y01, M=100, max_features=None, max_depth=30,
                min_samples_leaf=1, seed=0, max_bins=64):
     """
-    Fit a bagging or random forest classifier with out-of-bag estimates.
+    Fit a bagging or random forest model with out-of-bag estimates.
 
-    If max_features is None, all features are considered at each split,
-    producing a bagging ensemble.
+    Supports both binary classification and regression.
 
-    If max_features is specified, feature subsampling is performed
-    independently at each node, producing a random forest.
+    For regression, each leaf predicts the mean target value.
+    For classification, each leaf predicts the positive-class probability.
 
     Parameters
     ----------
@@ -3835,45 +3834,35 @@ def forest_fit(X, y01, M=100, max_features=None, max_depth=30,
         Training feature matrix.
 
     y01 : ndarray of shape (n,)
-        Binary target labels in {0, 1}.
+        Target values. Binary labels or continuous regression targets.
 
     M : int
-        Number of trees in the forest.
+        Number of trees.
 
     max_features : int or None
-        Number of randomly selected features considered at each node.
-        None means all features are considered.
+        Number of randomly selected features per node.
 
     max_depth : int
-        Maximum depth of each tree.
+        Maximum tree depth.
 
     min_samples_leaf : int
-        Minimum number of training examples required in each child.
-        Enforced through the minimum Hessian-weight requirement.
+        Minimum Hessian weight required in each child.
 
     seed : int
-        Random seed for reproducibility.
+        Random seed.
 
     max_bins : int
-        Maximum number of bins used for feature discretization.
+        Maximum number of feature bins.
 
     Returns
     -------
     dict
-        Model containing:
-        edges        : Feature bin thresholds.
-        f0           : Initial prediction (0.0).
-        trees        : List of fitted decision trees.
-        scale        : Equal averaging coefficient (1/M).
-        oob_coverage : Fraction of training examples with OOB predictions.
-        oob_error    : Classification error on OOB predictions.
+        Model containing edges, f0, trees, scale,
+        oob_coverage and oob_error.
     """
     X = np.asarray(X)
-    y01 = np.asarray(y01, dtype=float)
+    y = np.asarray(y01, dtype=float)
 
-    # ---------------------------------------------------------
-    # Validate inputs.
-    # ---------------------------------------------------------
     if X.ndim != 2:
         raise ValueError("X must be a 2D array.")
 
@@ -3882,102 +3871,55 @@ def forest_fit(X, y01, M=100, max_features=None, max_depth=30,
     if n == 0 or p == 0:
         raise ValueError("X must contain at least one row and one feature.")
 
-    if y01.shape != (n,):
-        raise ValueError("y01 must contain one label per training example.")
+    if y.shape != (n,):
+        raise ValueError("y must contain one target per training example.")
 
-    if not np.all(np.isfinite(X)):
-        raise ValueError("X must contain finite values.")
+    if not np.all(np.isfinite(X)) or not np.all(np.isfinite(y)):
+        raise ValueError("X and y must contain finite values.")
 
-    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
-        raise ValueError("y01 must contain only binary labels (0 or 1).")
-
-    if (
-        not isinstance(M, (int, np.integer))
-        or isinstance(M, (bool, np.bool_))
-        or M < 1
-    ):
+    if not isinstance(M, (int, np.integer)) or isinstance(M, (bool, np.bool_)) or M < 1:
         raise ValueError("M must be a positive integer.")
 
-    if (
-        not isinstance(max_depth, (int, np.integer))
-        or isinstance(max_depth, (bool, np.bool_))
-        or max_depth < 0
-    ):
-        raise ValueError("max_depth must be a non-negative integer.")
-
-    if (
-        not isinstance(min_samples_leaf, (int, np.integer))
-        or isinstance(min_samples_leaf, (bool, np.bool_))
-        or min_samples_leaf < 1
-    ):
+    if not isinstance(min_samples_leaf, (int, np.integer)) or min_samples_leaf < 1:
         raise ValueError("min_samples_leaf must be a positive integer.")
 
     if max_features is not None:
-        if (
-            not isinstance(max_features, (int, np.integer))
-            or isinstance(max_features, (bool, np.bool_))
-        ):
-            raise ValueError("max_features must be a positive integer or None.")
-
-        if not 1 <= max_features <= p:
+        if not isinstance(max_features, (int, np.integer)) or not 1 <= max_features <= p:
             raise ValueError("max_features must be between 1 and the number of features.")
 
-    # ---------------------------------------------------------
-    # Initialize feature binning.
-    # ---------------------------------------------------------
-
-    # Fit thresholds once using the original training data.
+    # Fit bin thresholds once using the training data.
     edges = fit_bins(X, max_bins=max_bins)
-
-    # Convert all training examples into integer bin codes.
     codes = apply_bins(X, edges)
-
-    # Determine the number of bins.
     nb = n_bins_of(edges)
-
-    # ---------------------------------------------------------
-    # Initialize the random generator and OOB accumulators.
-    # ---------------------------------------------------------
 
     rng = np.random.default_rng(seed)
 
-    # Sum of predictions from trees for which each example
-    # was not included in the bootstrap sample.
+    # Initialize out-of-bag prediction accumulators.
     oob_sum = np.zeros(n, dtype=float)
-
-    # Number of trees that did not train on each example.
     oob_count = np.zeros(n, dtype=int)
 
-    # Store all fitted trees.
     trees = []
 
-    # Unit Hessians make the leaf value equal to the mean target.
+    # Unit Hessians make each leaf value the mean target.
+    g = -y
     h = np.ones(n, dtype=float)
 
-    # The objective uses g = -y01, producing mean target values
-    # in the leaves through leaf_weight(G, H).
-    g = -y01
+    # Detect whether this is a binary classification problem.
+    is_binary = np.all(np.isin(y, [0.0, 1.0]))
 
-    # ---------------------------------------------------------
-    # Fit M bootstrap trees.
-    # ---------------------------------------------------------
     for m in range(M):
 
-        # Step 1: Draw a bootstrap sample of n rows with replacement.
-        rows = rng.integers(
-            0,
-            n,
-            size=n
-        )
+        # Draw a bootstrap sample.
+        rows = rng.integers(0, n, size=n)
 
-        # Determine which original examples were included.
+        # Identify the distinct in-bag examples.
         in_bag = np.zeros(n, dtype=bool)
         in_bag[rows] = True
 
-        # Identify examples not selected in this bootstrap sample.
+        # Identify out-of-bag examples.
         oob_rows = np.flatnonzero(~in_bag)
 
-        # Step 2: Grow a tree on the bootstrap sample.
+        # Grow a tree using the bootstrap sample.
         tree = grow_tree(
             codes[rows],
             g[rows],
@@ -3991,56 +3933,45 @@ def forest_fit(X, y01, M=100, max_features=None, max_depth=30,
             rng=rng
         )
 
-        # Store the fitted tree.
         trees.append(tree)
 
-        # Step 3: Accumulate predictions for OOB examples.
+        # Accumulate predictions for out-of-bag examples.
         if len(oob_rows) > 0:
-
-            oob_predictions = tree_predict(
-                tree,
-                codes[oob_rows]
-            )
+            oob_predictions = tree_predict(tree, codes[oob_rows])
 
             oob_sum[oob_rows] += oob_predictions
-
             oob_count[oob_rows] += 1
 
-    # ---------------------------------------------------------
-    # Calculate OOB coverage and OOB classification error.
-    # ---------------------------------------------------------
+    # Determine which examples have at least one OOB prediction.
+    has_oob = oob_count > 0
 
-    # An example has OOB coverage if at least one tree
-    # did not use it during training.
-    has_oob_prediction = oob_count > 0
+    oob_coverage = float(np.mean(has_oob))
 
-    oob_coverage = float(
-        np.mean(has_oob_prediction)
-    )
-
-    # Calculate the mean OOB prediction for each covered example.
+    # Calculate average OOB predictions.
     oob_predictions = np.zeros(n, dtype=float)
 
-    oob_predictions[has_oob_prediction] = (
-        oob_sum[has_oob_prediction]
-        / oob_count[has_oob_prediction]
+    oob_predictions[has_oob] = (
+        oob_sum[has_oob] / oob_count[has_oob]
     )
 
-    # Classify using the threshold specified in the instructions.
-    predicted_labels = oob_predictions[has_oob_prediction] > 0.5
-
-    true_labels = y01[has_oob_prediction] > 0.5
-
-    if np.any(has_oob_prediction):
-        oob_error = float(
-            np.mean(predicted_labels != true_labels)
-        )
+    if np.any(has_oob):
+        if is_binary:
+            # Preserve the original classification error definition.
+            oob_error = float(
+                np.mean(
+                    (oob_predictions[has_oob] > 0.5)
+                    != (y[has_oob] > 0.5)
+                )
+            )
+        else:
+            # For continuous targets, report OOB mean squared error.
+            oob_error = float(
+                np.mean(
+                    (oob_predictions[has_oob] - y[has_oob]) ** 2
+                )
+            )
     else:
         oob_error = 0.0
-
-    # ---------------------------------------------------------
-    # Return the forest model.
-    # ---------------------------------------------------------
 
     return {
         "edges": edges,
@@ -4259,4 +4190,112 @@ def ensemble_error_curves(X_train, y_train, X_test, y_test,
         "random_forest": random_forest_errors,
         "boosting": boosting_errors
     }
+
+# Step 28 - bias_variance_study
+def bias_variance_study(draw, x_test, f_test, fitters, n_draws=20):
+    """
+    Measure the squared bias and variance of multiple fitting procedures.
+
+    Parameters
+    ----------
+    draw : callable
+        Function draw(seed) returning a new training dataset (X, y).
+
+    x_test : ndarray
+        Test input points.
+
+    f_test : ndarray
+        True noise-free function values at x_test.
+
+    fitters : dict
+        Dictionary mapping model names to fitting functions.
+
+        Each fitting function must have the signature:
+            fit_predict(X, y, x_test)
+
+        It must return predictions at x_test.
+
+    n_draws : int
+        Number of independently generated training datasets.
+
+    Returns
+    -------
+    dict
+        Maps each fitter name to:
+        bias2    : Mean squared bias over x_test.
+        variance : Mean prediction variance over x_test.
+    """
+    x_test = np.asarray(x_test)
+    f_test = np.asarray(f_test, dtype=float)
+
+    if (
+        not isinstance(n_draws, (int, np.integer))
+        or isinstance(n_draws, (bool, np.bool_))
+        or n_draws < 1
+    ):
+        raise ValueError("n_draws must be a positive integer.")
+
+    if f_test.size == 0 or not np.all(np.isfinite(f_test)):
+        raise ValueError("f_test must contain finite, non-empty values.")
+
+    # Store predictions separately for each fitting procedure.
+    predictions = {
+        name: [] for name in fitters
+    }
+
+    # Generate n_draws independent training datasets.
+    for seed in range(n_draws):
+
+        # Draw one training dataset for this iteration.
+        X, y = draw(seed)
+
+        # Evaluate every fitting procedure on the same training draw.
+        for name, fit_predict in fitters.items():
+
+            pred = np.asarray(
+                fit_predict(X, y, x_test),
+                dtype=float
+            )
+
+            if pred.shape != f_test.shape:
+                raise ValueError(
+                    f"Predictions from '{name}' must have the same "
+                    "shape as f_test."
+                )
+
+            if not np.all(np.isfinite(pred)):
+                raise ValueError(
+                    f"Predictions from '{name}' must be finite."
+                )
+
+            predictions[name].append(pred)
+
+    # Calculate bias squared and variance for every fitter.
+    results = {}
+
+    for name, pred_list in predictions.items():
+
+        # Shape: (n_draws, number of test points).
+        pred_array = np.stack(pred_list, axis=0)
+
+        # Average predictions across all training draws.
+        mean_prediction = np.mean(pred_array, axis=0)
+
+        # Squared bias averaged over test points.
+        bias2 = np.mean(
+            (mean_prediction - f_test) ** 2
+        )
+
+        # Prediction variance averaged over test points.
+        # Uses NumPy's default ddof=0.
+        variance = np.mean(
+            np.var(pred_array, axis=0)
+        )
+
+        results[name] = {
+            "bias2": float(bias2),
+            "variance": float(variance)
+        }
+
+    return results
 
