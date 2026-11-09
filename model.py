@@ -85,3 +85,60 @@ def n_bins_of(edges):
     """
     return 1 + max((len(cuts) for cuts in edges), default=0)
 
+# Step 2 - split_gain
+def leaf_weight(G, H, lam=0.0):
+    """
+    Calculate the optimal weight of a leaf.
+
+    Formula:
+        w* = -G / (H + lam)
+
+    Supports both scalar values and NumPy arrays.
+    """
+    G = np.asarray(G)
+    H = np.asarray(H)
+
+    return -G / (H + lam)
+
+
+def structure_score(G, H, lam=0.0, gamma=0.0):
+    """
+    Calculate the structure score contribution of a single leaf.
+
+    Formula:
+        score = -0.5 * G^2 / (H + lam) + gamma
+
+    Supports both scalar values and NumPy arrays.
+    """
+    G = np.asarray(G)
+    H = np.asarray(H)
+
+    return -0.5 * (G ** 2) / (H + lam) + gamma
+
+
+def split_gain(GL, HL, GR, HR, lam=0.0, gamma=0.0):
+    """
+    Calculate the gain obtained by splitting a node into left and right children.
+
+    Formula:
+        gain = 0.5 * (
+            GL^2 / (HL + lam)
+            + GR^2 / (HR + lam)
+            - (GL + GR)^2 / (HL + HR + lam)
+        ) - gamma
+
+    Supports both scalar values and NumPy arrays.
+    """
+    GL = np.asarray(GL)
+    HL = np.asarray(HL)
+    GR = np.asarray(GR)
+    HR = np.asarray(HR)
+
+    gain = 0.5 * (
+        (GL ** 2) / (HL + lam)
+        + (GR ** 2) / (HR + lam)
+        - ((GL + GR) ** 2) / (HL + HR + lam)
+    ) - gamma
+
+    return gain
+

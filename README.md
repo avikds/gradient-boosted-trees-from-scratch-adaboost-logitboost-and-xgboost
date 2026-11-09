@@ -11,6 +11,7 @@ python scaffold.py
 ## Steps
 
 - [x] **1.** fit_bins
+- [x] **2.** split_gain
 
 ---
 
