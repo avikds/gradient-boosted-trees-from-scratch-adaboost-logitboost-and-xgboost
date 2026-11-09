@@ -17,6 +17,7 @@ python scaffold.py
 - [x] **5.** tree_predict
 - [x] **6.** grow_tree
 - [x] **7.** prune_tree
+- [x] **8.** additive_predict
 
 ---
 

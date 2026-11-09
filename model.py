@@ -729,3 +729,103 @@ def prune_tree(tree, gamma):
         "cover": np.asarray(new_cover, dtype=float)
     }
 
+# Step 8 - additive_predict
+def additive_predict(model, X, n_trees=None):
+    """
+    Evaluate an additive tree ensemble.
+
+    Formula:
+        f(x) = f0 + sum(scale[m] * tree[m](x))
+
+    Parameters
+    ----------
+    model : dict
+        Ensemble containing:
+        edges, f0, trees, scale.
+
+    X : ndarray of shape (n, p)
+        Raw input features.
+
+    n_trees : int or None
+        Number of initial trees to use.
+        If None, all trees are used.
+
+    Returns
+    -------
+    ndarray of shape (n,)
+        Predictions from the additive model.
+    """
+    X = np.asarray(X)
+
+    # Bin the input features using the model's stored bin thresholds.
+    codes = apply_bins(X, model["edges"])
+
+    trees = model["trees"]
+    scales = model["scale"]
+
+    # Determine how many trees to use.
+    if n_trees is None:
+        n_trees = len(trees)
+
+    if n_trees < 0:
+        raise ValueError("n_trees must be non-negative.")
+
+    # Start with the model's initial constant prediction.
+    predictions = np.full(X.shape[0], model["f0"], dtype=float)
+
+    # Add the contribution of each selected tree.
+    for tree, scale in zip(trees[:n_trees], scales[:n_trees]):
+        predictions += scale * tree_predict(tree, codes)
+
+    return predictions
+
+
+def staged_predict(model, X):
+    """
+    Return predictions after every stage of the additive ensemble.
+
+    Row 0 contains the initial prediction f0.
+    Row m contains the prediction after the first m trees.
+
+    Parameters
+    ----------
+    model : dict
+        Ensemble containing:
+        edges, f0, trees, scale.
+
+    X : ndarray of shape (n, p)
+        Raw input features.
+
+    Returns
+    -------
+    ndarray of shape (M + 1, n)
+        Predictions at every boosting stage.
+    """
+    X = np.asarray(X)
+
+    # Bin the input features only once.
+    codes = apply_bins(X, model["edges"])
+
+    trees = model["trees"]
+    scales = model["scale"]
+
+    n = X.shape[0]
+    M = len(trees)
+
+    # Allocate space for predictions at all stages.
+    predictions = np.empty((M + 1, n), dtype=float)
+
+    # Stage 0: initial constant prediction.
+    predictions[0] = model["f0"]
+
+    # Evaluate each tree exactly once.
+    for m in range(M):
+        tree_prediction = tree_predict(trees[m], codes)
+
+        # Update predictions using the tree's corresponding scale.
+        predictions[m + 1] = (
+            predictions[m] + scales[m] * tree_prediction
+        )
+
+    return predictions
+
