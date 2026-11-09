@@ -27,6 +27,7 @@ python scaffold.py
 - [x] **15.** logitboost_fit
 - [x] **16.** label_noise_study
 - [x] **17.** negative_gradient
+- [x] **18.** resolve_leaf
 
 ---
 

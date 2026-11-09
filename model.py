@@ -2127,3 +2127,224 @@ def negative_gradient(loss, y, f, delta=1.0):
             -np.logaddexp(0.0, y_signed * f)
         )
 
+# Step 18 - resolve_leaf
+def resolve_leaf(loss, y, f, delta=1.0):
+    """
+    Find the optimal constant adjustment for a leaf.
+
+    Parameters
+    ----------
+    loss : str
+        One of: squared, absolute, huber, exponential, logloss.
+
+    y : ndarray
+        Target values. For exponential and logloss,
+        labels must belong to {0, 1}.
+
+    f : ndarray
+        Current model predictions for the examples in the leaf.
+
+    delta : float
+        Positive Huber loss threshold.
+
+    Returns
+    -------
+    float
+        Optimal constant to add to the current predictions.
+    """
+    if loss not in ("squared", "absolute", "huber", "exponential", "logloss"):
+        raise ValueError(f"Unknown loss: {loss}")
+
+    y = np.asarray(y, dtype=float)
+    f = np.asarray(f, dtype=float)
+
+    if y.ndim != 1 or f.shape != y.shape:
+        raise ValueError("y and f must be 1D arrays of equal length.")
+
+    if len(y) == 0:
+        raise ValueError("At least one example is required.")
+
+    if not np.all(np.isfinite(y)) or not np.all(np.isfinite(f)):
+        raise ValueError("y and f must contain finite values.")
+
+    if loss in ("exponential", "logloss"):
+        if not np.all(np.isin(y, [0.0, 1.0])):
+            raise ValueError("Classification labels must contain only 0 and 1.")
+
+    # Residuals before applying the leaf adjustment.
+    r = y - f
+
+    # ---------------------------------------------------------
+    # 1. Squared-error loss: optimal adjustment is mean residual.
+    # ---------------------------------------------------------
+    if loss == "squared":
+        return float(np.mean(r))
+
+    # ---------------------------------------------------------
+    # 2. Absolute-error loss: optimal adjustment is median residual.
+    # ---------------------------------------------------------
+    elif loss == "absolute":
+        return float(np.median(r))
+
+    # ---------------------------------------------------------
+    # 3. Huber loss: iterative clipped-residual optimization.
+    # ---------------------------------------------------------
+    elif loss == "huber":
+        if not np.isfinite(delta) or delta <= 0:
+            raise ValueError("delta must be positive and finite.")
+
+        # Initialize using the median residual.
+        w = float(np.median(r))
+
+        # Perform exactly 50 updates as specified.
+        for _ in range(50):
+            w += float(np.mean(np.clip(r - w, -delta, delta)))
+
+        return float(w)
+
+    # ---------------------------------------------------------
+    # 4. Exponential loss: exact minimizer.
+    # ---------------------------------------------------------
+    elif loss == "exponential":
+
+        positive = y == 1.0
+        negative = y == 0.0
+
+        def stable_logsumexp(values):
+            """Calculate log(sum(exp(values))) stably."""
+            if len(values) == 0:
+                return -np.inf
+
+            maximum = np.max(values)
+
+            return float(
+                maximum + np.log(np.sum(np.exp(values - maximum)))
+            )
+
+        # Positive-class contribution:
+        # sum(exp(-f)) + 1e-12.
+        log_positive = np.logaddexp(
+            stable_logsumexp(-f[positive]),
+            np.log(1e-12)
+        )
+
+        # Negative-class contribution:
+        # sum(exp(f)) + 1e-12.
+        log_negative = np.logaddexp(
+            stable_logsumexp(f[negative]),
+            np.log(1e-12)
+        )
+
+        # Exact exponential-loss minimizer.
+        w = 0.5 * (log_positive - log_negative)
+
+        # Restrict the adjustment to [-4, 4].
+        return float(np.clip(w, -4.0, 4.0))
+
+    # ---------------------------------------------------------
+    # 5. Logloss: one Newton update starting from w = 0.
+    # ---------------------------------------------------------
+    elif loss == "logloss":
+
+        # Convert labels from {0, 1} to {-1, +1}.
+        y_signed = 2.0 * y - 1.0
+
+        # Margin at the initial adjustment w = 0.
+        margin = y_signed * f
+
+        # First derivative of total logloss with respect to w.
+        # dL/dw = -sum(y_signed / (1 + exp(margin))).
+        #
+        # np.logaddexp provides a stable sigmoid calculation.
+        sigmoid_negative = np.exp(
+            -np.logaddexp(0.0, margin)
+        )
+
+        first_derivative = -np.sum(
+            y_signed * sigmoid_negative
+        )
+
+        # Second derivative of total logloss.
+        # d2L/dw2 = sum(sigmoid(margin) * sigmoid(-margin)).
+        sigmoid_positive = np.exp(
+            -np.logaddexp(0.0, -margin)
+        )
+
+        second_derivative = np.sum(
+            sigmoid_positive * sigmoid_negative
+        )
+
+        # Apply one Newton step with a protected denominator.
+        second_derivative = max(
+            float(second_derivative),
+            1e-12
+        )
+
+        w = -float(first_derivative) / second_derivative
+
+        # Restrict the Newton adjustment to [-4, 4].
+        return float(np.clip(w, -4.0, 4.0))
+
+
+def initial_constant(loss, y, delta=1.0):
+    """
+    Calculate the optimal initial constant f0 for a model.
+
+    For logloss, use the exact log-odds of the positive class rate.
+
+    For all other losses, optimize a constant prediction starting
+    from f = 0 using resolve_leaf().
+
+    Parameters
+    ----------
+    loss : str
+        One of: squared, absolute, huber, exponential, logloss.
+
+    y : ndarray
+        Training target values.
+
+    delta : float
+        Positive Huber loss threshold.
+
+    Returns
+    -------
+    float
+        Optimal initial model prediction f0.
+    """
+    if loss not in ("squared", "absolute", "huber", "exponential", "logloss"):
+        raise ValueError(f"Unknown loss: {loss}")
+
+    y = np.asarray(y, dtype=float)
+
+    if y.ndim != 1 or len(y) == 0:
+        raise ValueError("y must be a non-empty 1D array.")
+
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y must contain finite values.")
+
+    # Logloss uses the exact log-odds of the positive class rate.
+    if loss == "logloss":
+
+        if not np.all(np.isin(y, [0.0, 1.0])):
+            raise ValueError("Logloss labels must contain only 0 and 1.")
+
+        positive_rate = np.mean(y)
+
+        # Clip the rate to avoid log(0) and division by zero.
+        positive_rate = np.clip(
+            positive_rate,
+            1e-12,
+            1.0 - 1e-12
+        )
+
+        return float(
+            np.log(positive_rate) - np.log1p(-positive_rate)
+        )
+
+    # For other losses, optimize the constant starting from f = 0.
+    f = np.zeros_like(y, dtype=float)
+
+    return float(
+        resolve_leaf(loss, y, f, delta=delta)
+    )
+
