@@ -39,6 +39,7 @@ python scaffold.py
 - [x] **27.** ensemble_error_curves
 - [x] **28.** bias_variance_study
 - [x] **29.** feature_importance
+- [x] **30.** partial_dependence
 
 ---
 

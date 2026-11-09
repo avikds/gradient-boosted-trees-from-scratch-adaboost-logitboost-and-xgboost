@@ -4381,3 +4381,190 @@ def feature_importance(trees, n_features):
 
     return importance
 
+# Step 30 - partial_dependence
+def partial_dependence(predict_fn, X, k, grid):
+    """
+    Calculate one-dimensional partial dependence.
+
+    For every value v in grid:
+        1. Replace column k of X with v.
+        2. Predict using predict_fn.
+        3. Average predictions over all rows.
+
+    Parameters
+    ----------
+    predict_fn : callable
+        Function accepting a 2D feature matrix and returning
+        one prediction per row.
+
+    X : ndarray of shape (n, p)
+        Original input feature matrix. It is never modified.
+
+    k : int
+        Index of the feature whose partial dependence is calculated.
+
+    grid : array-like
+        Values at which feature k is evaluated.
+
+    Returns
+    -------
+    ndarray
+        Mean prediction corresponding to each value in grid.
+    """
+    X = np.asarray(X)
+    grid = np.asarray(grid)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if X.shape[0] == 0:
+        raise ValueError("X must contain at least one example.")
+
+    if not isinstance(k, (int, np.integer)) or isinstance(k, (bool, np.bool_)):
+        raise ValueError("k must be an integer feature index.")
+
+    if k < 0 or k >= X.shape[1]:
+        raise ValueError("k must be a valid feature index.")
+
+    if grid.ndim != 1:
+        raise ValueError("grid must be a 1D array.")
+
+    # Use a compatible dtype so fractional grid values are not
+    # truncated when the original X contains integer values.
+    base_X = np.asarray(
+        X,
+        dtype=np.result_type(X.dtype, grid.dtype)
+    )
+
+    # Store the partial dependence values.
+    pd_values = np.empty(len(grid), dtype=float)
+
+    for i, v in enumerate(grid):
+
+        # Make a copy so the original input matrix remains unchanged.
+        X_modified = base_X.copy()
+
+        # Replace the selected feature with the current grid value.
+        X_modified[:, k] = v
+
+        # Obtain one prediction per example.
+        predictions = np.asarray(
+            predict_fn(X_modified),
+            dtype=float
+        )
+
+        if predictions.shape != (X.shape[0],):
+            raise ValueError(
+                "predict_fn must return one prediction per input row."
+            )
+
+        # Average predictions over all training examples.
+        pd_values[i] = np.mean(predictions)
+
+    return pd_values
+
+
+def partial_dependence_2d(predict_fn, X, j, k, grid_j, grid_k):
+    """
+    Calculate two-dimensional partial dependence.
+
+    For every pair (a, b) in grid_j x grid_k:
+        1. Replace column j of X with a.
+        2. Replace column k of X with b.
+        3. Predict using predict_fn.
+        4. Average predictions over all rows.
+
+    Parameters
+    ----------
+    predict_fn : callable
+        Function accepting a 2D feature matrix and returning
+        one prediction per row.
+
+    X : ndarray of shape (n, p)
+        Original input feature matrix. It is never modified.
+
+    j : int
+        Index of the first feature.
+
+    k : int
+        Index of the second feature.
+
+    grid_j : array-like
+        Values for the first feature.
+
+    grid_k : array-like
+        Values for the second feature.
+
+    Returns
+    -------
+    ndarray of shape (len(grid_j), len(grid_k))
+        Mean predictions for every pair of grid values.
+    """
+    X = np.asarray(X)
+    grid_j = np.asarray(grid_j)
+    grid_k = np.asarray(grid_k)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    if X.shape[0] == 0:
+        raise ValueError("X must contain at least one example.")
+
+    if (
+        not isinstance(j, (int, np.integer))
+        or isinstance(j, (bool, np.bool_))
+        or not isinstance(k, (int, np.integer))
+        or isinstance(k, (bool, np.bool_))
+    ):
+        raise ValueError("j and k must be integer feature indices.")
+
+    if not (0 <= j < X.shape[1]) or not (0 <= k < X.shape[1]):
+        raise ValueError("j and k must be valid feature indices.")
+
+    if j == k:
+        raise ValueError("j and k must refer to different features.")
+
+    if grid_j.ndim != 1 or grid_k.ndim != 1:
+        raise ValueError("grid_j and grid_k must be 1D arrays.")
+
+    # Choose a dtype that can represent both grids without
+    # truncating fractional values.
+    base_X = np.asarray(
+        X,
+        dtype=np.result_type(X.dtype, grid_j.dtype, grid_k.dtype)
+    )
+
+    # Allocate the output matrix.
+    pd_values = np.empty(
+        (len(grid_j), len(grid_k)),
+        dtype=float
+    )
+
+    # Evaluate every combination of grid values.
+    for a, value_j in enumerate(grid_j):
+
+        for b, value_k in enumerate(grid_k):
+
+            # Work on a copy to preserve the original X.
+            X_modified = base_X.copy()
+
+            # Replace both selected feature columns.
+            X_modified[:, j] = value_j
+            X_modified[:, k] = value_k
+
+            # Obtain predictions for all examples.
+            predictions = np.asarray(
+                predict_fn(X_modified),
+                dtype=float
+            )
+
+            if predictions.shape != (X.shape[0],):
+                raise ValueError(
+                    "predict_fn must return one prediction per input row."
+                )
+
+            # Average predictions across the remaining feature values.
+            pd_values[a, b] = np.mean(predictions)
+
+    return pd_values
+
