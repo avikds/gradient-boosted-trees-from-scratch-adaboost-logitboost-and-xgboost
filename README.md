@@ -21,6 +21,7 @@ python scaffold.py
 - [x] **9.** l2boost_fit
 - [x] **10.** shrinkage_path
 - [x] **11.** weighted_stump
+- [x] **12.** adaboost_fit
 
 ---
 

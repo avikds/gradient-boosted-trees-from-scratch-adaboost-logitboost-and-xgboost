@@ -1168,3 +1168,186 @@ def weighted_stump(codes, y, w, n_bins):
 
     return stump
 
+# Step 12 - adaboost_fit
+def optimal_beta(y, F, w):
+    """
+    Calculate the weighted classification error and optimal
+    AdaBoost step size in half-log-odds units.
+
+    Parameters
+    ----------
+    y : ndarray
+        True labels in {-1, +1}.
+
+    F : ndarray
+        Weak learner predictions in {-1, +1}.
+
+    w : ndarray
+        Non-negative example weights.
+
+    Returns
+    -------
+    tuple
+        (err, beta), where err is the weighted error and beta
+        is the optimal step size.
+    """
+    y = np.asarray(y)
+    F = np.asarray(F)
+    w = np.asarray(w, dtype=float)
+
+    if y.ndim != 1 or F.shape != y.shape or w.shape != y.shape:
+        raise ValueError("y, F, and w must be 1D arrays of equal length.")
+
+    if len(y) == 0:
+        raise ValueError("At least one example is required.")
+
+    if not np.all(np.isin(y, [-1, 1])):
+        raise ValueError("y must contain only -1 and +1.")
+
+    if not np.all(np.isin(F, [-1, 1])):
+        raise ValueError("F must contain only -1 and +1.")
+
+    if not np.all(np.isfinite(w)) or np.any(w < 0):
+        raise ValueError("Weights must be finite and non-negative.")
+
+    total_weight = np.sum(w)
+
+    if total_weight <= 0:
+        raise ValueError("The sum of weights must be positive.")
+
+    # Calculate the weighted classification error.
+    err = float(np.sum(w * (y != F)) / total_weight)
+
+    # Clip only for numerical stability in the logarithm.
+    # Return the original, unclipped error.
+    clipped_err = np.clip(err, 1e-12, 1.0 - 1e-12)
+
+    # Optimal step size in half-log-odds units.
+    beta = 0.5 * np.log(
+        (1.0 - clipped_err) / clipped_err
+    )
+
+    return err, float(beta)
+
+
+def adaboost_fit(X, y01, M=100, max_bins=64):
+    """
+    Fit an AdaBoost.M1 classifier using weighted decision stumps.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y01 : ndarray of shape (n,)
+        Binary labels in {0, 1}.
+
+    M : int
+        Maximum number of boosting rounds.
+
+    max_bins : int
+        Maximum number of bins for feature discretization.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges   : Feature bin thresholds.
+        f0      : Initial score (0.0).
+        trees   : List of fitted weighted stumps.
+        scale   : List of optimal beta coefficients.
+        errs    : List of weighted classification errors.
+        weights : Final normalized example weights.
+    """
+    X = np.asarray(X)
+    y01 = np.asarray(y01)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n = X.shape[0]
+
+    if n == 0 or y01.shape != (n,):
+        raise ValueError("y01 must contain one label per training example.")
+
+    if not np.all(np.isin(y01, [0, 1])):
+        raise ValueError("y01 must contain only 0 and 1.")
+
+    if not isinstance(M, (int, np.integer)) or isinstance(M, (bool, np.bool_)) or M < 0:
+        raise ValueError("M must be a non-negative integer.")
+
+    # Convert labels from {0, 1} to {-1, +1}.
+    y = 2.0 * y01.astype(float) - 1.0
+
+    # Fit bin thresholds once for the entire training dataset.
+    edges = fit_bins(X, max_bins=max_bins)
+    codes = apply_bins(X, edges)
+    nb = n_bins_of(edges)
+
+    # Initialize all example weights uniformly.
+    w = np.full(n, 1.0 / n, dtype=float)
+
+    # Store fitted weak learners and their coefficients.
+    trees = []
+    scales = []
+    errs = []
+
+    # Perform sequential boosting rounds.
+    for m in range(M):
+
+        # 1. Fit the best weighted decision stump.
+        stump = weighted_stump(codes, y, w, nb)
+
+        # Obtain predictions from the weak learner.
+        F = tree_predict(stump, codes)
+
+        # 2. Calculate weighted error and optimal step size.
+        err, beta = optimal_beta(y, F, w)
+
+        # Discard a weak learner that is no better than random guessing.
+        if err >= 0.5:
+            break
+
+        # Retain the accepted stump and its coefficient.
+        trees.append(stump)
+        scales.append(beta)
+        errs.append(err)
+
+        # Stop immediately if the stump classifies every example correctly.
+        if err == 0.0:
+            break
+
+        # 3. Update example weights.
+        #
+        # The model score is f = sum(beta * F).
+        # Therefore, Equation 18.33 gives:
+        #
+        # w_i proportional to exp(-y_i * f_i)
+        #
+        # The update must use beta, NOT 2 * beta.
+
+        log_w = np.full(n, -np.inf, dtype=float)
+
+        positive_weights = w > 0
+
+        log_w[positive_weights] = (
+            np.log(w[positive_weights])
+            - beta * y[positive_weights] * F[positive_weights]
+        )
+
+        # Numerically stable normalization.
+        log_w -= np.max(log_w)
+
+        w = np.exp(log_w)
+        w /= np.sum(w)
+
+    # Return the fitted AdaBoost model.
+    return {
+        "edges": edges,
+        "f0": 0.0,
+        "trees": trees,
+        "scale": scales,
+        "errs": errs,
+        "weights": w
+    }
+
