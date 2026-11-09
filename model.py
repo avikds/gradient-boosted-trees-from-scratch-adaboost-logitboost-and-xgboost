@@ -1028,3 +1028,143 @@ def shrinkage_path(X_train, y_train, X_test, y_test, nus, M=200, max_depth=2):
 
     return results
 
+# Step 11 - weighted_stump
+def weighted_stump(codes, y, w, n_bins):
+    """
+    Find the one-split classifier minimizing weighted classification error.
+
+    Parameters
+    ----------
+    codes : ndarray of shape (n, p)
+        Integer-binned feature values.
+
+    y : ndarray of shape (n,)
+        Class labels, containing only -1 and +1.
+
+    w : ndarray of shape (n,)
+        Non-negative example weights.
+
+    n_bins : int
+        Number of bins.
+
+    Returns
+    -------
+    dict
+        Three-node decision tree with keys:
+        feature, bin, left, right, value, gain, cover.
+    """
+    codes = np.asarray(codes)
+    y = np.asarray(y)
+    w = np.asarray(w, dtype=float)
+
+    if codes.ndim != 2:
+        raise ValueError("codes must be a 2D array.")
+
+    n, p = codes.shape
+
+    if y.shape != (n,) or w.shape != (n,):
+        raise ValueError("y and w must have length equal to the number of rows in codes.")
+
+    if not isinstance(n_bins, (int, np.integer)) or n_bins < 2:
+        raise ValueError("n_bins must be an integer of at least 2.")
+
+    if p == 0:
+        raise ValueError("At least one feature is required.")
+
+    if not np.issubdtype(codes.dtype, np.integer):
+        raise ValueError("codes must contain integer bin codes.")
+
+    if codes.size and (np.any(codes < 0) or np.any(codes >= n_bins)):
+        raise ValueError("Bin codes must be between 0 and n_bins - 1.")
+
+    if not np.all(np.isin(y, [-1, 1])):
+        raise ValueError("Labels y must contain only -1 and +1.")
+
+    if not np.all(np.isfinite(w)) or np.any(w < 0):
+        raise ValueError("Weights must be finite and non-negative.")
+
+    if not np.all(np.isfinite(y)):
+        raise ValueError("Labels must be finite.")
+
+    # Separate the weights belonging to positive and negative examples.
+    positive_weights = w * (y == 1)
+    negative_weights = w * (y == -1)
+
+    total_positive = np.sum(positive_weights)
+    total_negative = np.sum(negative_weights)
+
+    # There are n_bins - 1 possible split thresholds per feature.
+    n_thresholds = n_bins - 1
+
+    # Store errors for both orientations of every candidate split.
+    # Orientation 0: -1 on the left, +1 on the right.
+    # Orientation 1: +1 on the left, -1 on the right.
+    errors = np.empty((p, n_thresholds, 2), dtype=float)
+
+    # Process each feature using weighted histograms.
+    for j in range(p):
+
+        # Calculate positive and negative weight histograms.
+        pos_hist = np.bincount(
+            codes[:, j],
+            weights=positive_weights,
+            minlength=n_bins
+        )
+
+        neg_hist = np.bincount(
+            codes[:, j],
+            weights=negative_weights,
+            minlength=n_bins
+        )
+
+        # Cumulative weights for bins 0 through t.
+        # Excluding the last bin gives all valid thresholds.
+        pos_left = np.cumsum(pos_hist)[:-1]
+        neg_left = np.cumsum(neg_hist)[:-1]
+
+        # Orientation 0:
+        # Left predicts -1, right predicts +1.
+        # Errors = positive weight on left + negative weight on right.
+        error_neg_left = (
+            pos_left + total_negative - neg_left
+        )
+
+        # Orientation 1:
+        # Left predicts +1, right predicts -1.
+        # Errors = negative weight on left + positive weight on right.
+        error_pos_left = (
+            neg_left + total_positive - pos_left
+        )
+
+        errors[j, :, 0] = error_neg_left
+        errors[j, :, 1] = error_pos_left
+
+    # Flattening preserves the required tie-breaking order:
+    # lowest feature, then lowest threshold, then -1 on the left.
+    best_index = np.argmin(errors)
+
+    feature_idx, threshold_idx, orientation = np.unravel_index(
+        best_index, errors.shape
+    )
+
+    # Determine the predictions for the two leaves.
+    if orientation == 0:
+        left_value = -1.0
+        right_value = 1.0
+    else:
+        left_value = 1.0
+        right_value = -1.0
+
+    # Construct the required three-node tree.
+    stump = {
+        "feature": np.array([feature_idx, -1, -1], dtype=int),
+        "bin": np.array([threshold_idx, -1, -1], dtype=int),
+        "left": np.array([1, -1, -1], dtype=int),
+        "right": np.array([2, -1, -1], dtype=int),
+        "value": np.array([0.0, left_value, right_value], dtype=float),
+        "gain": np.zeros(3, dtype=float),
+        "cover": np.zeros(3, dtype=float)
+    }
+
+    return stump
+

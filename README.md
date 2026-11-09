@@ -20,6 +20,7 @@ python scaffold.py
 - [x] **8.** additive_predict
 - [x] **9.** l2boost_fit
 - [x] **10.** shrinkage_path
+- [x] **11.** weighted_stump
 
 ---
 
