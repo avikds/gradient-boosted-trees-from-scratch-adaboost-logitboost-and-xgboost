@@ -2348,3 +2348,229 @@ def initial_constant(loss, y, delta=1.0):
         resolve_leaf(loss, y, f, delta=delta)
     )
 
+# Step 19 - gradient_boost_fit
+def gradient_boost_fit(X, y, loss="squared", M=100, nu=0.1,
+                       max_depth=3, subsample=1.0, delta=1.0,
+                       resolve=True, seed=0, max_bins=64):
+    """
+    Fit a gradient boosting model with optional loss-specific leaf re-solving.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y : ndarray of shape (n,)
+        Target values. For exponential and logloss, labels
+        must belong to {0, 1}.
+
+    loss : str
+        Loss function: squared, absolute, huber, exponential or logloss.
+
+    M : int
+        Number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    subsample : float
+        Fraction of training examples sampled at each round.
+        Must be in (0, 1].
+
+    delta : float
+        Huber loss threshold.
+
+    resolve : bool
+        Whether to re-optimize the values of individual leaves.
+
+    seed : int
+        Random seed for reproducible subsampling.
+
+    max_bins : int
+        Maximum number of bins for feature discretization.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges      : Feature bin thresholds.
+        f0         : Initial constant prediction.
+        trees      : List of fitted decision trees.
+        scale      : Learning-rate multipliers.
+        loss       : Selected loss function.
+        train_loss : Mean training loss after every boosting round.
+    """
+    X = np.asarray(X)
+    y = np.asarray(y, dtype=float)
+
+    # ---------------------------------------------------------
+    # Validate inputs.
+    # ---------------------------------------------------------
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n = X.shape[0]
+
+    if n == 0:
+        raise ValueError("Training data must contain at least one example.")
+
+    if y.ndim != 1 or y.shape != (n,):
+        raise ValueError("y must be a 1D array with one target per row of X.")
+
+    if not np.all(np.isfinite(X)) or not np.all(np.isfinite(y)):
+        raise ValueError("X and y must contain finite values.")
+
+    if loss not in ("squared", "absolute", "huber", "exponential", "logloss"):
+        raise ValueError(f"Unknown loss: {loss}")
+
+    if loss in ("exponential", "logloss"):
+        if not np.all(np.isin(y, [0.0, 1.0])):
+            raise ValueError("Classification labels must be 0 or 1.")
+
+    if (
+        not isinstance(M, (int, np.integer))
+        or isinstance(M, (bool, np.bool_))
+        or M < 0
+    ):
+        raise ValueError("M must be a non-negative integer.")
+
+    if not np.isfinite(nu):
+        raise ValueError("nu must be finite.")
+
+    if not np.isfinite(delta) or delta <= 0:
+        raise ValueError("delta must be positive and finite.")
+
+    if not np.isfinite(subsample) or not 0.0 < subsample <= 1.0:
+        raise ValueError("subsample must be in the interval (0, 1].")
+
+    # ---------------------------------------------------------
+    # Initialize the model.
+    # ---------------------------------------------------------
+
+    # Fit bin thresholds once for the entire dataset.
+    edges = fit_bins(X, max_bins=max_bins)
+
+    # Convert all training examples into bin codes.
+    codes = apply_bins(X, edges)
+
+    # Determine the number of bins.
+    nb = n_bins_of(edges)
+
+    # Calculate the optimal initial constant.
+    f0 = initial_constant(loss, y, delta=delta)
+
+    # Initialize predictions using the initial constant.
+    f = np.full(n, f0, dtype=float)
+
+    # Initialize the random generator for subsampling.
+    rng = np.random.default_rng(seed)
+
+    # Store the fitted trees, learning rates and training losses.
+    trees = []
+    scales = []
+    train_loss = []
+
+    # ---------------------------------------------------------
+    # Perform M boosting rounds.
+    # ---------------------------------------------------------
+    for m in range(M):
+
+        # Step 1: Select training rows for this boosting round.
+        if subsample < 1.0:
+            sample_size = int(round(subsample * n))
+
+            if sample_size < 1:
+                raise ValueError(
+                    "subsample selects zero examples; increase subsample."
+                )
+
+            rows = rng.choice(
+                n,
+                size=sample_size,
+                replace=False
+            )
+        else:
+            # Use every training example when subsample == 1.
+            rows = np.arange(n)
+
+        # Step 2: Calculate negative gradients for sampled examples.
+        residuals = negative_gradient(
+            loss,
+            y[rows],
+            f[rows],
+            delta=delta
+        )
+
+        # grow_tree uses leaf_weight = -G / H.
+        # Therefore, pass the negative gradient's negative
+        # as the tree gradient.
+        g = -residuals
+
+        # Unit Hessians as specified in the instructions.
+        h = np.ones(len(rows), dtype=float)
+
+        # Grow a tree using only the sampled examples.
+        tree = grow_tree(
+            codes[rows],
+            g,
+            h,
+            nb,
+            max_depth=max_depth,
+            min_child_weight=1.0
+        )
+
+        # Step 3: Re-optimize individual leaf values for the
+        # selected loss, using only sampled rows in each leaf.
+        if resolve:
+
+            # Find the leaf reached by each sampled example.
+            leaf_ids = tree_apply(tree, codes[rows])
+
+            # Process every leaf represented in the sampled data.
+            for leaf_id in np.unique(leaf_ids):
+
+                # Identify sampled examples belonging to this leaf.
+                mask = leaf_ids == leaf_id
+
+                # Re-solve the leaf value for the actual loss.
+                tree["value"][leaf_id] = resolve_leaf(
+                    loss,
+                    y[rows[mask]],
+                    f[rows[mask]],
+                    delta=delta
+                )
+
+        # Step 4: Predict using the updated tree on ALL training rows.
+        tree_predictions = tree_predict(tree, codes)
+
+        # Update the entire ensemble.
+        f += nu * tree_predictions
+
+        # Store the fitted tree and learning-rate multiplier.
+        trees.append(tree)
+        scales.append(float(nu))
+
+        # Calculate mean training loss over all training examples.
+        current_loss = np.mean(
+            loss_value(loss, y, f, delta=delta)
+        )
+
+        train_loss.append(float(current_loss))
+
+    # ---------------------------------------------------------
+    # Return the fitted additive model.
+    # ---------------------------------------------------------
+    model = {
+        "edges": edges,
+        "f0": float(f0),
+        "trees": trees,
+        "scale": scales,
+        "loss": loss,
+        "train_loss": train_loss
+    }
+
+    return model
+
