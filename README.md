@@ -24,6 +24,7 @@ python scaffold.py
 - [x] **12.** adaboost_fit
 - [x] **13.** probability_report
 - [x] **14.** working_response
+- [x] **15.** logitboost_fit
 
 ---
 

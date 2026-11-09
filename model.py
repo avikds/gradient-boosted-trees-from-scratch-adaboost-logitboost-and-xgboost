@@ -1561,3 +1561,221 @@ def working_response(y01, f, z_max=4.0):
 
     return z, w
 
+# Step 15 - logitboost_fit
+def half_logit_loss(y01, f):
+    """
+    Calculate the mean binary logistic loss in half-log-odds units.
+
+    Formula:
+        L = mean(log(1 + exp(-2 * (2*y01 - 1) * f)))
+
+    Uses np.logaddexp for numerical stability.
+
+    Parameters
+    ----------
+    y01 : ndarray of shape (n,)
+        Binary target labels in {0, 1}.
+
+    f : ndarray of shape (n,)
+        Model scores in half-log-odds units.
+
+    Returns
+    -------
+    float
+        Mean logistic loss.
+    """
+    y01 = np.asarray(y01, dtype=float)
+    f = np.asarray(f, dtype=float)
+
+    if y01.ndim != 1 or f.shape != y01.shape:
+        raise ValueError("y01 and f must be 1D arrays of equal length.")
+
+    if len(y01) == 0:
+        raise ValueError("At least one example is required.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only finite binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(f)):
+        raise ValueError("f must contain finite values.")
+
+    # Convert binary labels to signed labels {-1, +1}.
+    y_signed = 2.0 * y01 - 1.0
+
+    # Stable computation of log(1 + exp(x)).
+    losses = np.logaddexp(0.0, -2.0 * y_signed * f)
+
+    return float(np.mean(losses))
+
+
+def logitboost_fit(X, y01, M=100, max_depth=1, nu=1.0,
+                   max_bins=64, z_max=4.0):
+    """
+    Fit a LogitBoost model using Newton-based gradient boosting.
+
+    Each boosting round:
+        1. Computes working responses and Hessian weights.
+        2. Fits a regression tree using weighted least squares.
+        3. Updates the model using nu/2 times the tree predictions.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Training feature matrix.
+
+    y01 : ndarray of shape (n,)
+        Binary target labels in {0, 1}.
+
+    M : int
+        Number of boosting rounds.
+
+    max_depth : int
+        Maximum depth of each regression tree.
+
+    nu : float
+        Learning rate.
+
+    max_bins : int
+        Maximum number of bins for feature discretization.
+
+    z_max : float
+        Maximum absolute value of the working response.
+
+    Returns
+    -------
+    dict
+        Model containing:
+        edges      : Feature bin thresholds.
+        f0         : Initial score (0.0).
+        trees      : List of fitted regression trees.
+        scale      : Learning-rate multipliers (nu/2).
+        train_loss : Logistic loss after every boosting round.
+        weights    : Final normalized Hessian weights.
+    """
+    X = np.asarray(X)
+    y01 = np.asarray(y01, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+
+    n = X.shape[0]
+
+    if n == 0 or y01.shape != (n,):
+        raise ValueError("y01 must contain one label per row of X.")
+
+    if not np.all(np.isfinite(y01)) or not np.all(np.isin(y01, [0.0, 1.0])):
+        raise ValueError("y01 must contain only finite binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(X)):
+        raise ValueError("X must contain finite values.")
+
+    if (
+        not isinstance(M, (int, np.integer))
+        or isinstance(M, (bool, np.bool_))
+        or M < 0
+    ):
+        raise ValueError("M must be a non-negative integer.")
+
+    if not np.isfinite(nu):
+        raise ValueError("nu must be finite.")
+
+    if not np.isfinite(z_max) or z_max <= 0:
+        raise ValueError("z_max must be positive and finite.")
+
+    # Fit feature bin thresholds once.
+    edges = fit_bins(X, max_bins=max_bins)
+
+    # Convert training features to integer bin codes.
+    codes = apply_bins(X, edges)
+
+    # Determine the number of bins.
+    nb = n_bins_of(edges)
+
+    # Initialize the model score to zero.
+    f = np.zeros(n, dtype=float)
+
+    # Store fitted trees, their scales and training losses.
+    trees = []
+    scales = []
+    train_loss = []
+
+    # Each boosting round performs one Newton-based update.
+    for m in range(M):
+
+        # Step 1: Calculate working responses and Hessian weights.
+        z, w = working_response(
+            y01,
+            f,
+            z_max=z_max
+        )
+
+        # Step 2: Construct gradients and Hessians so that
+        # the tree minimizes sum(w * (z - F(x))**2).
+        #
+        # The leaf weight formula is -G/H.
+        g = -w * z
+        h = w
+
+        # Fit a real-valued regression tree.
+        tree = grow_tree(
+            codes,
+            g,
+            h,
+            nb,
+            max_depth=max_depth,
+            min_child_weight=1e-6
+        )
+
+        # Obtain the predictions of the newly fitted tree.
+        tree_prediction = tree_predict(tree, codes)
+
+        # Step 3: Apply the Newton boosting update.
+        # The factor of 1/2 is required for half-log-odds scores.
+        scale = nu / 2.0
+
+        f = f + scale * tree_prediction
+
+        # Store the fitted tree and its corresponding scale.
+        trees.append(tree)
+        scales.append(float(scale))
+
+        # Record logistic loss after this boosting round.
+        train_loss.append(
+            half_logit_loss(y01, f)
+        )
+
+    # Calculate the Hessian weights at the final model scores.
+    _, final_weights = working_response(
+        y01,
+        f,
+        z_max=z_max
+    )
+
+    # Normalize final weights to sum to one.
+    weight_sum = np.sum(final_weights)
+
+    if weight_sum > 0:
+        final_weights = final_weights / weight_sum
+    else:
+        # Stable fallback if all Hessian weights underflow to zero.
+        log_weights = (
+            -np.logaddexp(0.0, -2.0 * f)
+            -np.logaddexp(0.0, 2.0 * f)
+        )
+
+        log_weights -= np.max(log_weights)
+        final_weights = np.exp(log_weights)
+        final_weights /= np.sum(final_weights)
+
+    # Return the fitted LogitBoost model.
+    model = {
+        "edges": edges,
+        "f0": 0.0,
+        "trees": trees,
+        "scale": scales,
+        "train_loss": train_loss,
+        "weights": final_weights
+    }
+
+    return model
+
