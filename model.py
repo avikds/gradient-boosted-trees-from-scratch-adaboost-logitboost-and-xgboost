@@ -142,3 +142,69 @@ def split_gain(GL, HL, GR, HR, lam=0.0, gamma=0.0):
 
     return gain
 
+# Step 3 - gradient_histograms
+def gradient_histograms(codes, g, h, n_bins):
+    """
+    Sum gradients and Hessians by feature and bin.
+
+    Parameters
+    ----------
+    codes : ndarray of shape (n, p)
+        Integer bin codes for n examples and p features.
+
+    g : ndarray of shape (n,)
+        Per-example gradients.
+
+    h : ndarray of shape (n,)
+        Per-example Hessians.
+
+    n_bins : int
+        Number of bins.
+
+    Returns
+    -------
+    G : ndarray of shape (p, n_bins)
+        Sum of gradients for each feature and bin.
+
+    H : ndarray of shape (p, n_bins)
+        Sum of Hessians for each feature and bin.
+    """
+    codes = np.asarray(codes)
+    g = np.asarray(g, dtype=float)
+    h = np.asarray(h, dtype=float)
+
+    n, p = codes.shape
+
+    if g.shape != (n,) or h.shape != (n,):
+        raise ValueError("g and h must have length equal to the number of rows in codes.")
+
+    if not isinstance(n_bins, (int, np.integer)) or n_bins < 1:
+        raise ValueError("n_bins must be a positive integer.")
+
+    if not np.issubdtype(codes.dtype, np.integer):
+        raise ValueError("codes must contain integer bin codes.")
+
+    if codes.size and (np.any(codes < 0) or np.any(codes >= n_bins)):
+        raise ValueError("Bin codes must be between 0 and n_bins - 1.")
+
+    # Initialize gradient and Hessian histogram arrays.
+    G = np.zeros((p, n_bins), dtype=float)
+    H = np.zeros((p, n_bins), dtype=float)
+
+    # Aggregate gradients and Hessians separately for each feature.
+    # np.bincount performs the summation without Python loops over rows.
+    for j in range(p):
+        G[j] = np.bincount(
+            codes[:, j],
+            weights=g,
+            minlength=n_bins
+        )
+
+        H[j] = np.bincount(
+            codes[:, j],
+            weights=h,
+            minlength=n_bins
+        )
+
+    return G, H
+
