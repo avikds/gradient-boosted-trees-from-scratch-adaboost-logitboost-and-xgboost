@@ -3676,3 +3676,144 @@ def order_study(X_train, y_train, X_test, y_test,
 
     return results
 
+# Step 25 - subsample_study
+def subsample_study(X_train, y_train, X_test, y_test,
+                    fractions, seeds, M=200, nu=0.1, max_depth=3):
+    """
+    Compare stochastic gradient boosting models using different
+    training-row subsampling fractions and random seeds.
+
+    Each model is trained using logistic loss and evaluated on the
+    complete test dataset.
+
+    Parameters
+    ----------
+    X_train : ndarray of shape (n_train, p)
+        Training feature matrix.
+
+    y_train : ndarray of shape (n_train,)
+        Binary training labels in {0, 1}.
+
+    X_test : ndarray of shape (n_test, p)
+        Test feature matrix.
+
+    y_test : ndarray of shape (n_test,)
+        Binary test labels in {0, 1}.
+
+    fractions : iterable
+        Row-sampling fractions to evaluate.
+
+    seeds : iterable
+        Random seeds used for independent model fits.
+
+    M : int
+        Number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    Returns
+    -------
+    dict
+        Maps each sampling fraction to:
+        mean_error     : Average test classification error.
+        mean_log_loss  : Average test logistic log-loss.
+
+        Both values are ordinary Python floats.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    # Validate feature matrices.
+    if X_train.ndim != 2 or X_test.ndim != 2:
+        raise ValueError("X_train and X_test must be 2D arrays.")
+
+    if X_train.shape[1] != X_test.shape[1]:
+        raise ValueError("Training and test data must have the same number of features.")
+
+    # Validate target arrays.
+    if y_train.shape != (X_train.shape[0],):
+        raise ValueError("y_train must contain one label per training example.")
+
+    if y_test.shape != (X_test.shape[0],) or len(y_test) == 0:
+        raise ValueError("y_test must contain one label per test example.")
+
+    if not np.all(np.isfinite(y_train)) or not np.all(np.isin(y_train, [0.0, 1.0])):
+        raise ValueError("y_train must contain only binary labels (0 or 1).")
+
+    if not np.all(np.isfinite(y_test)) or not np.all(np.isin(y_test, [0.0, 1.0])):
+        raise ValueError("y_test must contain only binary labels (0 or 1).")
+
+    # Materialize seeds so they can be reused for every fraction.
+    seeds = list(seeds)
+
+    if len(seeds) == 0:
+        raise ValueError("At least one random seed is required.")
+
+    # Store results for every sampling fraction.
+    results = {}
+
+    # Convert true test labels into the binary classification format.
+    true_labels = y_test > 0.5
+
+    # Evaluate each row-sampling fraction.
+    for fraction in fractions:
+
+        fraction = float(fraction)
+
+        if not np.isfinite(fraction) or not 0.0 < fraction <= 1.0:
+            raise ValueError("Every sampling fraction must belong to (0, 1].")
+
+        # Store individual results across random seeds.
+        errors = []
+        log_losses = []
+
+        # Train an independent model for each random seed.
+        for seed in seeds:
+
+            # Fit gradient boosting using logistic loss.
+            model = gradient_boost_fit(
+                X_train,
+                y_train,
+                loss="logloss",
+                M=M,
+                nu=nu,
+                max_depth=max_depth,
+                subsample=fraction,
+                seed=seed
+            )
+
+            # Predict on the complete test dataset using all trees.
+            scores = additive_predict(model, X_test)
+
+            # Convert scores into binary class predictions.
+            predictions = scores > 0.0
+
+            # Calculate test classification error.
+            error = float(
+                np.mean(predictions != true_labels)
+            )
+
+            # Calculate numerically stable binary logistic loss.
+            log_loss = float(
+                np.mean(loss_value("logloss", y_test, scores))
+            )
+
+            # Record the results for this seed.
+            errors.append(error)
+            log_losses.append(log_loss)
+
+        # Average the metrics across all random seeds.
+        results[fraction] = {
+            "mean_error": float(np.mean(errors)),
+            "mean_log_loss": float(np.mean(log_losses))
+        }
+
+    return results
+

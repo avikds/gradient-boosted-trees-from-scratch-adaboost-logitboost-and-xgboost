@@ -34,6 +34,7 @@ python scaffold.py
 - [x] **22.** tree_objective
 - [x] **23.** xgb_fit
 - [x] **24.** order_study
+- [x] **25.** subsample_study
 
 ---
 
