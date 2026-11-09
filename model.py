@@ -946,3 +946,85 @@ def l2boost_fit(X, y, M=100, nu=1.0, max_depth=2, max_bins=64):
 
     return model
 
+# Step 10 - shrinkage_path
+def shrinkage_path(X_train, y_train, X_test, y_test, nus, M=200, max_depth=2):
+    """
+    Measure the effect of different learning rates on test error.
+
+    For each learning rate, fit a least-squares boosting model and
+    calculate test MSE at every stage, from 0 to M trees.
+
+    Parameters
+    ----------
+    X_train : ndarray
+        Training feature matrix.
+
+    y_train : ndarray
+        Training target values.
+
+    X_test : ndarray
+        Test feature matrix.
+
+    y_test : ndarray
+        Test target values.
+
+    nus : iterable
+        Learning rates to evaluate.
+
+    M : int
+        Number of boosting rounds.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    Returns
+    -------
+    dict
+        Maps each learning rate to a dictionary containing:
+        best_M    : Number of trees with the lowest test MSE.
+        best_mse  : Lowest test MSE.
+        final_mse : Test MSE after all M trees.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    results = {}
+
+    # Evaluate each specified learning rate independently.
+    for nu in nus:
+
+        # Fit a least-squares boosting model.
+        model = l2boost_fit(
+            X_train,
+            y_train,
+            M=M,
+            nu=nu,
+            max_depth=max_depth
+        )
+
+        # Obtain predictions at every boosting stage.
+        # Shape: (M + 1, number of test examples).
+        predictions = staged_predict(model, X_test)
+
+        # Calculate test MSE for every stage, including stage 0.
+        test_mse = np.mean(
+            (predictions - y_test[None, :]) ** 2,
+            axis=1
+        )
+
+        # np.argmin returns the first occurrence when multiple stages
+        # have the same minimum test MSE.
+        best_M = int(np.argmin(test_mse))
+
+        # Store the best and final test errors.
+        results[nu] = {
+            "best_M": best_M,
+            "best_mse": float(test_mse[best_M]),
+            "final_mse": float(test_mse[-1])
+        }
+
+    return results
+
