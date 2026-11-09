@@ -1,3 +1,4 @@
+```
 spam data: UCI copy with a random split of the same size (ESL mirrors unavailable)
 3065 training and 1536 test emails, 39.5% spam in training
 
@@ -109,3 +110,4 @@ random forest out-of-bag error 0.0483 against test error 0.0488
   hp = 3: ch! 0 -> 1 moves the log-odds by +1.57 and the probability from 0.020 to 0.091
 
 total time 962s
+```
