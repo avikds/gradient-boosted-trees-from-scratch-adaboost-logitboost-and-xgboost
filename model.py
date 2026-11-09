@@ -2574,3 +2574,122 @@ def gradient_boost_fit(X, y, loss="squared", M=100, nu=0.1,
 
     return model
 
+# Step 20 - outlier_study
+def outlier_study(X_train, y_train, X_test, y_test,
+                  losses, M=200, nu=0.1, max_depth=3, delta=1.0):
+    """
+    Compare regression loss functions on data containing outliers.
+
+    For each loss, train a gradient boosting model and evaluate
+    its predictions on the test dataset.
+
+    Parameters
+    ----------
+    X_train : ndarray of shape (n_train, p)
+        Training feature matrix.
+
+    y_train : ndarray of shape (n_train,)
+        Training target values, potentially containing outliers.
+
+    X_test : ndarray of shape (n_test, p)
+        Test feature matrix.
+
+    y_test : ndarray of shape (n_test,)
+        Clean test target values.
+
+    losses : iterable
+        Loss functions to evaluate:
+        squared, absolute, huber, exponential, logloss.
+
+    M : int
+        Number of boosting rounds.
+
+    nu : float
+        Learning rate.
+
+    max_depth : int
+        Maximum depth of each tree.
+
+    delta : float
+        Huber loss threshold.
+
+    Returns
+    -------
+    dict
+        Maps each loss name to:
+        test_rmse : RMSE after all boosting rounds.
+        test_mae  : MAE after all boosting rounds.
+        best_rmse : Lowest RMSE across all boosting stages.
+    """
+    X_train = np.asarray(X_train)
+    y_train = np.asarray(y_train, dtype=float)
+
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test, dtype=float)
+
+    if X_train.ndim != 2 or X_test.ndim != 2:
+        raise ValueError("X_train and X_test must be 2D arrays.")
+
+    if X_train.shape[1] != X_test.shape[1]:
+        raise ValueError("Training and test data must have the same number of features.")
+
+    if y_train.shape != (X_train.shape[0],):
+        raise ValueError("y_train must have one target per training example.")
+
+    if y_test.shape != (X_test.shape[0],) or len(y_test) == 0:
+        raise ValueError("y_test must have one target per test example.")
+
+    if not np.all(np.isfinite(y_train)) or not np.all(np.isfinite(y_test)):
+        raise ValueError("Target values must be finite.")
+
+    results = {}
+
+    # Evaluate each requested loss independently.
+    for loss_name in losses:
+
+        # Fit gradient boosting using the selected loss.
+        model = gradient_boost_fit(
+            X_train,
+            y_train,
+            loss=loss_name,
+            M=M,
+            nu=nu,
+            max_depth=max_depth,
+            delta=delta
+        )
+
+        # Obtain predictions at every stage, from zero trees
+        # through the complete ensemble.
+        predictions = staged_predict(model, X_test)
+
+        # Calculate residuals for every stage.
+        residuals = predictions - y_test[None, :]
+
+        # Calculate the test RMSE at every boosting stage.
+        stage_rmse = np.sqrt(
+            np.mean(residuals ** 2, axis=1)
+        )
+
+        # Predictions after all M boosting rounds.
+        final_predictions = predictions[-1]
+
+        # RMSE after the complete ensemble.
+        test_rmse = float(stage_rmse[-1])
+
+        # Mean absolute error after the complete ensemble.
+        test_mae = float(
+            np.mean(np.abs(final_predictions - y_test))
+        )
+
+        # Lowest RMSE over all stages, including stage zero.
+        best_rmse = float(np.min(stage_rmse))
+
+        # Store results as plain Python floats.
+        results[loss_name] = {
+            "test_rmse": test_rmse,
+            "test_mae": test_mae,
+            "best_rmse": best_rmse
+        }
+
+    return results
+

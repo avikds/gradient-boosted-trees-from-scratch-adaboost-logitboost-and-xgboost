@@ -29,6 +29,7 @@ python scaffold.py
 - [x] **17.** negative_gradient
 - [x] **18.** resolve_leaf
 - [x] **19.** gradient_boost_fit
+- [x] **20.** outlier_study
 
 ---
 
